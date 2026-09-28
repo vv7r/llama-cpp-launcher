@@ -1,0 +1,13 @@
+/target
+config.json
+/profiles
+benchmark.md
+
+# Réglages locaux de Claude Code (chemins absolus, propres à une machine)
+.claude/settings.local.json
+
+# Notes de développement locales, non publiées
+CLAUDE.md
+
+# Exécutable produit par scripts/build-release.ps1
+/dist

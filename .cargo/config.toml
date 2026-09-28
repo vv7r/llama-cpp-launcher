@@ -1,0 +1,4 @@
+# Lie la CRT statiquement : le .exe produit n'a besoin d'aucun
+# redistribuable Visual C++ sur la machine cible.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
