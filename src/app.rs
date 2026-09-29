@@ -2984,13 +2984,17 @@ impl App {
                 // serveur écrivait.
                 let font = egui::FontId::monospace(12.0);
                 let row_height = ui.fonts_mut(|f| f.row_height(&font));
+                // Lignes serrées : l'écart doit être nul AVANT `show_rows`, qui
+                // le lit pour placer les lignes et calculer la hauteur totale.
+                // Mis à zéro seulement à l'intérieur, egui comptait 6 px par
+                // ligne qui n'étaient pas dessinés : un vide restait en bas.
+                ui.spacing_mut().item_spacing.y = 0.0;
                 egui::ScrollArea::both()
                     .id_salt("console")
                     .auto_shrink([false, false])
                     .stick_to_bottom(self.autoscroll)
                     .show_rows(ui, row_height, self.console.len(), |ui, rows| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                        ui.spacing_mut().item_spacing.y = 0.0;
                         for line in self.console.range(rows) {
                             ui.label(
                                 RichText::new(line)
