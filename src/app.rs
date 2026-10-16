@@ -3855,12 +3855,12 @@ impl App {
             self.cfg.energy_since.clone()
         };
         egui::Grid::new("power_grid")
-            .num_columns(4)
+            .num_columns(5)
             .striped(true)
             .spacing([22.0, 5.0])
             .show(ui, |ui| {
                 ui.label("");
-                for h in [tr(fr, "Énergie", "Energy"), tr(fr, "Coût", "Cost"), ""] {
+                for h in [tr(fr, "Énergie", "Energy"), tr(fr, "Coût", "Cost"), tr(fr, "Durée", "Time"), ""] {
                     ui.label(RichText::new(h).strong().color(theme::accent()));
                 }
                 ui.end_row();
@@ -3874,14 +3874,18 @@ impl App {
                             "Energy the card used while the server runs, since its last start.",
                         ),
                         self.power.server_wh,
-                        match (self.power.server_duration().is_zero(), tokens > 0) {
-                            (true, _) => String::new(),
-                            (false, false) => power::duration(self.power.server_duration()),
-                            (false, true) => format!(
-                                "{} · {} / 1000 tokens",
-                                power::duration(self.power.server_duration()),
+                        if self.power.server_duration().is_zero() {
+                            String::new()
+                        } else {
+                            power::duration(self.power.server_duration())
+                        },
+                        if tokens > 0 {
+                            format!(
+                                "{} / 1000 tokens",
                                 power::energy(self.power.server_wh * 1000.0 / tokens as f64, fr)
-                            ),
+                            )
+                        } else {
+                            String::new()
                         },
                     ),
                     (
@@ -3896,6 +3900,7 @@ impl App {
                         ),
                         self.power.session_wh,
                         power::duration(self.power.session_duration()),
+                        String::new(),
                     ),
                     (
                         tr(fr, "Total cumulé", "Running total"),
@@ -3906,9 +3911,10 @@ impl App {
                         ),
                         self.energy_total_wh,
                         format!("{} {since}", tr(fr, "depuis le", "since")),
+                        String::new(),
                     ),
                 ];
-                for (label, tip, wh, extra) in rows {
+                for (label, tip, wh, time, extra) in rows {
                     ui.label(label).on_hover_text(tip);
                     ui.label(RichText::new(power::energy(wh, fr)).monospace().size(12.0));
                     ui.label(
@@ -3917,6 +3923,7 @@ impl App {
                             .size(12.0)
                             .color(theme::yellow()),
                     );
+                    ui.label(RichText::new(time).monospace().size(12.0));
                     ui.label(RichText::new(extra).color(theme::muted()).size(11.0));
                     ui.end_row();
                 }
