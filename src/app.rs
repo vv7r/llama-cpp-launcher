@@ -3859,18 +3859,6 @@ impl App {
             .striped(true)
             .spacing([22.0, 5.0])
             .show(ui, |ui| {
-                ui.label("");
-                // La durée est calée à droite de sa colonne (largeur de l'image
-                // précédente, la colonne n'étant pas la dernière de la grille).
-                let right = egui::Layout::right_to_left(egui::Align::Center);
-                for h in [tr(fr, "Énergie", "Energy"), tr(fr, "Coût", "Cost")] {
-                    ui.label(RichText::new(h).strong().color(theme::accent()));
-                }
-                ui.with_layout(right, |ui| {
-                    ui.label(RichText::new(tr(fr, "Durée", "Time")).strong().color(theme::accent()))
-                });
-                ui.label("");
-                ui.end_row();
                 let rows = [
                     (
                         tr(fr, "Depuis le démarrage du serveur", "Since the server started"),
@@ -3921,6 +3909,37 @@ impl App {
                         String::new(),
                     ),
                 ];
+                // La durée est calée à droite de sa colonne. Les mises en page
+                // à droite d'egui dépendent de la largeur de l'image précédente
+                // et tombaient de travers : la colonne prend la largeur du plus
+                // long texte et chaque texte y est peint contre le bord droit.
+                let head = tr(fr, "Durée", "Time");
+                let head_font = egui::TextStyle::Body.resolve(ui.style());
+                let mono = egui::FontId::monospace(12.0);
+                let measure = |ui: &Ui, text: &str, font: &egui::FontId| {
+                    ui.fonts_mut(|f| {
+                        f.layout_no_wrap(text.to_owned(), font.clone(), egui::Color32::PLACEHOLDER)
+                            .size()
+                            .x
+                    })
+                };
+                let width = rows
+                    .iter()
+                    .map(|r| measure(ui, &r.3, &mono))
+                    .fold(measure(ui, head, &head_font), f32::max);
+                let right_cell = |ui: &mut Ui, text: &str, font: egui::FontId, color| {
+                    let height = ui.fonts_mut(|f| f.row_height(&font));
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+                    ui.painter().text(rect.right_center(), egui::Align2::RIGHT_CENTER, text, font, color);
+                };
+
+                ui.label("");
+                for h in [tr(fr, "Énergie", "Energy"), tr(fr, "Coût", "Cost")] {
+                    ui.label(RichText::new(h).strong().color(theme::accent()));
+                }
+                right_cell(ui, head, head_font.clone(), theme::accent());
+                ui.label("");
+                ui.end_row();
                 for (label, tip, wh, time, extra) in rows {
                     ui.label(label).on_hover_text(tip);
                     ui.label(RichText::new(power::energy(wh, fr)).monospace().size(12.0));
@@ -3930,7 +3949,7 @@ impl App {
                             .size(12.0)
                             .color(theme::yellow()),
                     );
-                    ui.with_layout(right, |ui| ui.label(RichText::new(time).monospace().size(12.0)));
+                    right_cell(ui, &time, mono.clone(), ui.visuals().text_color());
                     ui.label(RichText::new(extra).color(theme::muted()).size(11.0));
                     ui.end_row();
                 }
