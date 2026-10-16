@@ -3854,8 +3854,16 @@ impl App {
         } else {
             self.cfg.energy_since.clone()
         };
+        // Wh par 1000 tokens générés, affiché sous le tableau : une colonne de
+        // plus prolongeait les lignes au-delà de la durée.
+        let per_tokens = (tokens > 0).then(|| {
+            format!(
+                "{} / 1000 tokens",
+                power::energy(self.power.server_wh * 1000.0 / tokens as f64, fr)
+            )
+        });
         egui::Grid::new("power_grid")
-            .num_columns(5)
+            .num_columns(4)
             .striped(true)
             .spacing([22.0, 5.0])
             .show(ui, |ui| {
@@ -3874,14 +3882,6 @@ impl App {
                         } else {
                             power::duration(self.power.server_duration())
                         },
-                        if tokens > 0 {
-                            format!(
-                                "{} / 1000 tokens",
-                                power::energy(self.power.server_wh * 1000.0 / tokens as f64, fr)
-                            )
-                        } else {
-                            String::new()
-                        },
                     ),
                     (
                         tr(fr, "Depuis l'ouverture de l'application", "Since the app opened"),
@@ -3895,7 +3895,6 @@ impl App {
                         ),
                         self.power.session_wh,
                         power::duration(self.power.session_duration()),
-                        String::new(),
                     ),
                     (
                         tr(fr, "Total cumulé", "Running total"),
@@ -3906,7 +3905,6 @@ impl App {
                         ),
                         self.energy_total_wh,
                         format!("{} {since}", tr(fr, "depuis le", "since")),
-                        String::new(),
                     ),
                 ];
                 // La durée est calée à droite de sa colonne. Les mises en page
@@ -3938,9 +3936,8 @@ impl App {
                     ui.label(RichText::new(h).strong().color(theme::accent()));
                 }
                 right_cell(ui, head, head_font.clone(), theme::accent());
-                ui.label("");
                 ui.end_row();
-                for (label, tip, wh, time, extra) in rows {
+                for (label, tip, wh, time) in rows {
                     ui.label(label).on_hover_text(tip);
                     ui.label(RichText::new(power::energy(wh, fr)).monospace().size(12.0));
                     ui.label(
@@ -3950,7 +3947,6 @@ impl App {
                             .color(theme::yellow()),
                     );
                     right_cell(ui, &time, mono.clone(), ui.visuals().text_color());
-                    ui.label(RichText::new(extra).color(theme::muted()).size(11.0));
                     ui.end_row();
                 }
             });
@@ -3971,6 +3967,14 @@ impl App {
                     .color(theme::muted())
                     .size(12.0),
                 );
+            }
+            if let Some(per_tokens) = &per_tokens {
+                ui.label(RichText::new(format!("· {per_tokens}")).color(theme::muted()).size(12.0))
+                    .on_hover_text(tr(
+                        fr,
+                        "Énergie consommée depuis le démarrage du serveur, pour 1000 tokens générés.",
+                        "Energy used since the server started, per 1000 generated tokens.",
+                    ));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
