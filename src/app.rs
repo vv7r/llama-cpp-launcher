@@ -3860,9 +3860,16 @@ impl App {
             .spacing([22.0, 5.0])
             .show(ui, |ui| {
                 ui.label("");
-                for h in [tr(fr, "Énergie", "Energy"), tr(fr, "Coût", "Cost"), tr(fr, "Durée", "Time"), ""] {
+                // La durée est calée à droite de sa colonne (largeur de l'image
+                // précédente, la colonne n'étant pas la dernière de la grille).
+                let right = egui::Layout::right_to_left(egui::Align::Center);
+                for h in [tr(fr, "Énergie", "Energy"), tr(fr, "Coût", "Cost")] {
                     ui.label(RichText::new(h).strong().color(theme::accent()));
                 }
+                ui.with_layout(right, |ui| {
+                    ui.label(RichText::new(tr(fr, "Durée", "Time")).strong().color(theme::accent()))
+                });
+                ui.label("");
                 ui.end_row();
                 let rows = [
                     (
@@ -3923,7 +3930,7 @@ impl App {
                             .size(12.0)
                             .color(theme::yellow()),
                     );
-                    ui.label(RichText::new(time).monospace().size(12.0));
+                    ui.with_layout(right, |ui| ui.label(RichText::new(time).monospace().size(12.0)));
                     ui.label(RichText::new(extra).color(theme::muted()).size(11.0));
                     ui.end_row();
                 }
