@@ -122,7 +122,8 @@ fn first_line(mut cmd: Command) -> Option<String> {
 
 // --------------------------------------------------------------- prérequis
 
-/// Backends proposés pour une installation depuis zéro.
+/// Backends proposés pour une installation depuis zéro, ou pour changer
+/// celui d'une installation existante.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Backend {
     Cpu,
@@ -138,6 +139,15 @@ impl Backend {
             Backend::Cpu => "CPU",
             Backend::Cuda => "CUDA (NVIDIA)",
             Backend::Vulkan => "Vulkan",
+        }
+    }
+
+    /// Nom court, celui de `BuildConfig::backend` et des releases.
+    pub fn name(self) -> &'static str {
+        match self {
+            Backend::Cpu => "cpu",
+            Backend::Cuda => "cuda",
+            Backend::Vulkan => "vulkan",
         }
     }
 }
@@ -382,6 +392,33 @@ impl BuildConfig {
         BuildConfig {
             defines,
             ..Default::default()
+        }
+    }
+
+    /// Les mêmes options avec un autre backend : celles des backends
+    /// (`GGML_CUDA*`, `GGML_VULKAN*`…) et les architectures GPU sont retirées,
+    /// puis celles du backend choisi ajoutées comme pour une installation.
+    /// Générateur, compilateur et autres options sont conservés.
+    pub fn with_backend(&self, backend: Backend) -> Self {
+        const BACKENDS: [&str; 8] = [
+            "GGML_CUDA", "GGML_HIP", "GGML_SYCL", "GGML_VULKAN", "GGML_METAL", "GGML_OPENCL",
+            "GGML_MUSA", "GGML_CANN",
+        ];
+        let fresh = Self::for_backend(backend);
+        let mut defines: Vec<_> = self
+            .defines
+            .iter()
+            .filter(|(n, ..)| {
+                !BACKENDS.iter().any(|b| n.starts_with(b))
+                    && !n.ends_with("_ARCHITECTURES")
+                    && !fresh.defines.iter().any(|(f, ..)| f == n)
+            })
+            .cloned()
+            .collect();
+        defines.extend(fresh.defines);
+        BuildConfig {
+            defines,
+            ..self.clone()
         }
     }
 
@@ -720,6 +757,8 @@ pub struct Plan {
     /// choix (reconfiguration si le build existant diffère), `None` garde
     /// celui du build.
     pub fa_all: Option<bool>,
+    /// Changer le backend du build existant (CPU → CUDA…) : `None` le garde.
+    pub switch_backend: Option<Backend>,
 }
 
 /// Met à jour les sources, compile et publie une nouvelle release.
@@ -825,9 +864,38 @@ fn run_update(plan: &Plan, ctx: &Ctx) -> anyhow::Result<Release> {
     // 2. Configuration, seulement la première fois : les suivantes sont
     //    incrémentales et CMake se reconfigure seul si besoin.
     stage(ctx, 2, "Configuration CMake")?;
-    if build_dir.join("CMakeCache.txt").is_file() {
+    let cache = build_dir.join("CMakeCache.txt");
+    // Changement de backend : le dossier de compilation (celui de l'app,
+    // jamais un build de l'utilisateur) repart de zéro avec les mêmes
+    // options. Le garder laisserait les bibliothèques de l'ancien backend
+    // (ggml-cuda.dll…) dans bin/, copiées ensuite dans la nouvelle release.
+    let mut switched = None;
+    if let Some(want) = plan.switch_backend {
+        if cache.is_file() {
+            let current = BuildConfig::read(&cache)?;
+            if current.backend() != want.name() {
+                ctx.line(format!(
+                    "changement de backend : {} → {}",
+                    current.backend().to_uppercase(),
+                    want.label()
+                ));
+                std::fs::remove_dir_all(&build_dir).map_err(|e| {
+                    anyhow::anyhow!("impossible de vider {} : {e}", build_dir.display())
+                })?;
+                switched = Some(current.with_backend(want));
+            }
+        }
+    }
+    if let Some(mut config) = switched {
+        if let Some(want) = plan.fa_all.filter(|_| config.backend() == "cuda") {
+            config.set_fa_all(want);
+        }
+        let mut cmake = tool(CMAKE);
+        cmake.args(config.configure_args(source, &build_dir));
+        run_streamed(cmake, ctx, |_| false)?;
+    } else if cache.is_file() {
         ctx.line(format!("configuration existante réutilisée : {}", build_dir.display()));
-        let current = BuildConfig::read(&build_dir.join("CMakeCache.txt"))?;
+        let current = BuildConfig::read(&cache)?;
         if let Some(want) = plan.fa_all.filter(|w| current.backend() == "cuda" && *w != current.fa_all()) {
             ctx.line(if want {
                 "FlashAttention : toutes les paires de types K/V (compilation plus longue)"
@@ -842,7 +910,7 @@ fn run_update(plan: &Plan, ctx: &Ctx) -> anyhow::Result<Release> {
             run_streamed(cmake, ctx, |_| false)?;
         }
     } else {
-        let mut config = match &plan.reference {
+        let config = match &plan.reference {
             Some(cache) => {
                 ctx.line(format!("options reprises de {}", cache.display()));
                 BuildConfig::read(cache)?
@@ -851,6 +919,10 @@ fn run_update(plan: &Plan, ctx: &Ctx) -> anyhow::Result<Release> {
                 ctx.line(format!("backend choisi : {}", plan.backend.label()));
                 BuildConfig::for_backend(plan.backend)
             }
+        };
+        let mut config = match plan.switch_backend {
+            Some(want) if config.backend() != want.name() => config.with_backend(want),
+            _ => config,
         };
         if let Some(want) = plan.fa_all.filter(|_| config.backend() == "cuda") {
             config.set_fa_all(want);
@@ -1307,6 +1379,25 @@ CMAKE_GENERATOR_PLATFORM:INTERNAL=
     }
 
     #[test]
+    fn switching_backend_keeps_the_other_options() {
+        let cuda = BuildConfig::parse(CACHE);
+        let cpu = cuda.with_backend(Backend::Cpu);
+        assert_eq!(cpu.backend(), "cpu");
+        assert_eq!(cpu.generator, cuda.generator);
+        assert!(!cpu.defines.iter().any(|(n, ..)| n.starts_with("GGML_CUDA") || n == "CMAKE_CUDA_ARCHITECTURES"));
+        assert!(cpu.defines.iter().any(|(n, _, v)| n == "LLAMA_BUILD_TESTS" && v == "OFF"));
+        // Les options étrangères au backend restent ; celles des autres
+        // backends (GGML_VULKAN, GGML_SYCL_TARGET) partent.
+        assert!(cpu.defines.iter().any(|(n, _, v)| n == "BUILD_SHARED_LIBS" && v == "ON"));
+        assert!(!cpu.defines.iter().any(|(n, ..)| n.starts_with("GGML_VULKAN") || n.starts_with("GGML_SYCL")));
+        let back = cpu.with_backend(Backend::Cuda);
+        assert_eq!(back.backend(), "cuda");
+        let args = back.configure_args(Path::new("s"), Path::new("b"));
+        assert!(args.contains(&"-DCMAKE_CUDA_ARCHITECTURES=native".to_string()));
+        assert_eq!(cpu.with_backend(Backend::Vulkan).backend(), "vulkan");
+    }
+
+    #[test]
     fn suggests_the_gpu_only_when_usable() {
         let mut p = Prereqs::default();
         assert_eq!(p.suggested(), Backend::Cpu);
@@ -1423,6 +1514,36 @@ obtenu    : {}", wanted.summary(true), got.summary(true));
         let _ = std::fs::remove_dir_all(&build);
     }
 
+    /// Changement de backend : les options du build de l'app, passées en CPU
+    /// puis en CUDA, configurées par le vrai CMake dans un dossier temporaire
+    /// (rien n'est compilé, le build existant n'est pas touché).
+    ///
+    /// ```text
+    /// set LLAMA_SOURCE=C:\llama\llama.cpp
+    /// cargo test configure_backend_switch -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "nécessite un dépôt llama.cpp compilé par l'app (LLAMA_SOURCE), CMake et CUDA"]
+    fn configure_backend_switch() {
+        let source = PathBuf::from(std::env::var("LLAMA_SOURCE").expect("LLAMA_SOURCE"));
+        let current = BuildConfig::read(&source.join(BUILD_DIR_NAME).join("CMakeCache.txt")).unwrap();
+        for backend in [Backend::Cpu, Backend::Cuda] {
+            let wanted = current.with_backend(backend);
+            let build = std::env::temp_dir().join(format!("uillamacpp-sw-{}-{}", backend.name(), std::process::id()));
+            let out = Command::new("cmake")
+                .args(wanted.configure_args(&source, &build))
+                .output()
+                .unwrap();
+            let log = String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "cmake ({}) a échoué :\n{log}", backend.name());
+            let got = BuildConfig::read(&build.join("CMakeCache.txt")).unwrap();
+            println!("{} → {}", current.summary(true), got.summary(true));
+            assert_eq!(got.backend(), backend.name());
+            assert_eq!(got.generator, current.generator);
+            let _ = std::fs::remove_dir_all(&build);
+        }
+    }
+
     /// Installation complète depuis zéro, backend CPU : clone GitHub,
     /// configuration, compilation, release, vérification. Plusieurs minutes.
     ///
@@ -1443,6 +1564,7 @@ obtenu    : {}", wanted.summary(true), got.summary(true));
             clone: false,
             delete_previous: None,
             fa_all: None,
+            switch_backend: None,
         });
         let started = std::time::Instant::now();
         let release = loop {

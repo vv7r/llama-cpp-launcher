@@ -73,6 +73,8 @@ downloads, live statistics and GPU power tracking.
 - Updates build incrementally and publish a **new release folder** each time
   (`llama-b11235-cuda`): a running server is never overwritten, and older
   versions stay available for comparison. Deleting one is an explicit choice.
+- **Change backend** at update time (CPU → CUDA or Vulkan, and back): the
+  build starts over with the same options, the existing releases are kept.
 - Optional **FlashAttention for every KV cache type**
   (`GGML_CUDA_FA_QUANTS=all`): by default llama.cpp only compiles the CUDA
   kernels for f16-f16, q4_0-q4_0, q8_0-q8_0 and bf16-bf16. The cache-type lists

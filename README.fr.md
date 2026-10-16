@@ -165,6 +165,10 @@ restent disponibles, par exemple pour les comparer au benchmark.
 - La première compilation part de zéro (20 à 60 min avec CUDA) ; les suivantes
   sont incrémentales. Progression, durée et annulation dans la fenêtre et dans
   la barre du haut ; le détail est dans la console.
+- **Backend** : celui du build est gardé par défaut ; on peut en choisir un
+  autre (passer d'une installation CPU à CUDA ou Vulkan, par exemple, après
+  avoir installé l'outil). La compilation repart alors de zéro avec les mêmes
+  options ; les versions déjà publiées sont conservées.
 
 Chaque mise à jour **conserve l'ancienne version**. Pour la supprimer :
 

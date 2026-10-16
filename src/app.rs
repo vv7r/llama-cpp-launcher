@@ -210,6 +210,9 @@ pub struct App {
     update_delete_previous: bool,
     /// FlashAttention CUDA pour toutes les paires de types K/V.
     update_fa_all: bool,
+    /// Nouveau backend pour la mise à jour ; `None` garde celui du build.
+    /// Remis à `None` à chaque ouverture de la fenêtre.
+    update_backend: Option<updater::Backend>,
     /// Version depuis laquelle le serveur en cours a été lancé.
     server_dir: Option<PathBuf>,
     /// Version dont la suppression attend confirmation.
@@ -323,6 +326,7 @@ impl App {
             mmproj_count: 0,
             update_delete_previous: false,
             update_fa_all: false,
+            update_backend: None,
             server_dir: None,
             confirm_version_delete: None,
             prereqs: None,
@@ -1119,14 +1123,16 @@ impl App {
             Action::OpenUpdate => {
                 self.update_open = true;
                 self.update_delete_previous = false;
+                self.update_backend = None;
                 self.inspect_source();
                 // Coché si le build actuel compile déjà toutes les paires.
                 self.update_fa_all =
                     self.update_config.as_ref().is_some_and(|(_, c)| c.fa_all());
                 self.sync_install_dir();
-                if !updater::is_source(Path::new(&self.cfg.llama_source_directory)) {
-                    self.start_prereqs();
-                }
+                // Aussi pour une mise à jour : les outils disponibles disent
+                // vers quels backends on peut passer (un toolkit CUDA installé
+                // depuis la première compilation, par exemple).
+                self.start_prereqs();
             }
             Action::BrowseInstallDir => {
                 if let Some(dir) = pick_folder(&self.install_dir) {
@@ -1490,6 +1496,7 @@ impl App {
                 None
             },
             fa_all: Some(self.update_fa_all),
+            switch_backend: self.update_backend,
         }));
     }
 
@@ -1700,6 +1707,7 @@ impl App {
             clone: true,
             delete_previous: None,
             fa_all: Some(self.update_fa_all),
+            switch_backend: None,
         }));
     }
 
@@ -1777,8 +1785,12 @@ impl App {
                         Err(e) => {
                             self.log(format!("! {e}"));
                             self.notify(e.clone(), theme::red());
+                            // Le dossier de compilation a pu changer de
+                            // backend avant l'échec : la suite repart de lui.
+                            self.inspect_source();
                         }
                     }
+                    self.update_backend = None;
                     self.update_result = Some(result);
                 }
             }
@@ -4859,11 +4871,72 @@ impl App {
                         ));
                         self.update_delete_previous = delete;
                     }
+                    // Backend : celui du build par défaut, ou un autre (le
+                    // dossier de compilation repart alors de zéro).
+                    let current = self.update_config.as_ref().map(|(_, c)| c.backend());
+                    if let Some(current) = current {
+                        field_label(
+                            ui,
+                            "Backend",
+                            tr(
+                                fr,
+                                "Moteur de calcul compilé. Le garder recompile seulement ce qui a \
+                                 changé ; en choisir un autre recompile tout. Un backend dont \
+                                 l'outil manque ne peut pas être choisi.",
+                                "Compute backend to build. Keeping it only rebuilds what changed; \
+                                 picking another one rebuilds everything. A backend whose tool is \
+                                 missing cannot be picked.",
+                            ),
+                        );
+                        let keep = format!("{} · {}", current.to_uppercase(), tr(fr, "actuel", "current"));
+                        let mut chosen = self.update_backend;
+                        ComboBox::from_id_salt("update_backend")
+                            .width(260.0)
+                            .selected_text(match chosen {
+                                Some(b) => b.label().to_string(),
+                                None => keep.clone(),
+                            })
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut chosen, None, keep);
+                                for b in updater::Backend::ALL {
+                                    if b.name() == current {
+                                        continue;
+                                    }
+                                    let ready = self.prereqs.as_ref().is_some_and(|p| p.backend_ready(b));
+                                    let mut text = b.label().to_string();
+                                    if !ready {
+                                        text.push_str(if self.prereqs.is_some() {
+                                            tr(fr, "  · outil manquant", "  · tool missing")
+                                        } else {
+                                            tr(fr, "  · détection…", "  · detecting…")
+                                        });
+                                    }
+                                    ui.add_enabled_ui(ready, |ui| {
+                                        ui.selectable_value(&mut chosen, Some(b), text);
+                                    });
+                                }
+                            });
+                        self.update_backend = chosen;
+                        if chosen.is_some() {
+                            hint(
+                                ui,
+                                tr(
+                                    fr,
+                                    "Compilation complète (CUDA : 20 à 60 min). Les versions déjà \
+                                     publiées sont conservées.",
+                                    "Full build (CUDA: 20 to 60 min). The versions already \
+                                     released are kept.",
+                                ),
+                            );
+                        }
+                    }
+                    let backend_changed = self.update_backend.is_some();
                     // Changer l'option FlashAttention justifie de recompiler
                     // la version déjà publiée.
                     let mut fa_changed = false;
                     if let Some((_, c)) = &self.update_config {
-                        if c.backend() == "cuda" {
+                        let target = self.update_backend.map_or(c.backend(), |b| b.name());
+                        if target == "cuda" {
                             let mut fa = self.update_fa_all;
                             fa_all_checkbox(ui, &mut fa, fr);
                             self.update_fa_all = fa;
@@ -4872,7 +4945,7 @@ impl App {
                     }
                     let can = source_ok
                         && !self.cfg.llama_releases_directory.is_empty()
-                        && (!up_to_date_released || fa_changed);
+                        && (!up_to_date_released || fa_changed || backend_changed);
                     if ui
                         .add_enabled(
                             can,
