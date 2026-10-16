@@ -28,6 +28,9 @@ pub struct PowerLog {
     pub session_wh: f64,
     /// Énergie depuis le démarrage du serveur, en Wh.
     pub server_wh: f64,
+    /// Temps de fonctionnement du serveur compté avec `server_wh`, en
+    /// secondes.
+    server_secs: f64,
 }
 
 impl PowerLog {
@@ -43,23 +46,24 @@ impl PowerLog {
             samples: Vec::new(),
             session_wh: 0.0,
             server_wh: 0.0,
+            server_secs: 0.0,
         }
     }
 
     /// Ajoute un relevé ; renvoie l'énergie comptée depuis le précédent, en
     /// Wh (le débit relevé, tenu pendant l'intervalle écoulé).
     pub fn record(&mut self, watts: f64, server_running: bool, now: Instant) -> f64 {
-        let wh = match self.last {
-            Some(prev) => {
-                let dt = now.saturating_duration_since(prev).as_secs_f64();
-                if dt <= MAX_GAP_SECS { watts * dt / 3600.0 } else { 0.0 }
-            }
+        let dt = match self.last {
+            Some(prev) => now.saturating_duration_since(prev).as_secs_f64(),
             None => 0.0,
         };
+        let dt = if dt <= MAX_GAP_SECS { dt } else { 0.0 };
+        let wh = watts * dt / 3600.0;
         self.last = Some(now);
         self.session_wh += wh;
         if server_running {
             self.server_wh += wh;
+            self.server_secs += dt;
         }
         let secs = now.saturating_duration_since(self.origin).as_secs_f64() + self.origin_offset;
         self.samples.push([secs, watts]);
@@ -83,6 +87,13 @@ impl PowerLog {
 
     pub fn reset_server(&mut self) {
         self.server_wh = 0.0;
+        self.server_secs = 0.0;
+    }
+
+    /// Temps pendant lequel le serveur a tourné depuis son démarrage (ou la
+    /// réinitialisation des statistiques), compté avec son énergie.
+    pub fn server_duration(&self) -> Duration {
+        Duration::from_secs_f64(self.server_secs)
     }
 
     pub fn origin_wall(&self) -> DateTime<Local> {
@@ -183,6 +194,7 @@ mod tests {
         log.record(180.0, false, t0 + Duration::from_secs(4));
         assert!((log.session_wh - 0.3).abs() < 1e-9);
         assert!((log.server_wh - 0.2).abs() < 1e-9);
+        assert_eq!(log.server_duration(), Duration::from_secs(2));
         // Un trou d'une minute (veille) n'est pas compté.
         assert_eq!(log.record(300.0, true, t0 + Duration::from_secs(64)), 0.0);
         assert_eq!(log.range(), Some((180.0, 300.0, 360.0)));

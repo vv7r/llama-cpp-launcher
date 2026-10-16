@@ -3874,13 +3874,14 @@ impl App {
                             "Energy the card used while the server runs, since its last start.",
                         ),
                         self.power.server_wh,
-                        if tokens > 0 {
-                            format!(
-                                "{} / 1000 tokens",
+                        match (self.power.server_duration().is_zero(), tokens > 0) {
+                            (true, _) => String::new(),
+                            (false, false) => power::duration(self.power.server_duration()),
+                            (false, true) => format!(
+                                "{} · {} / 1000 tokens",
+                                power::duration(self.power.server_duration()),
                                 power::energy(self.power.server_wh * 1000.0 / tokens as f64, fr)
-                            )
-                        } else {
-                            String::new()
+                            ),
                         },
                     ),
                     (
@@ -3894,11 +3895,7 @@ impl App {
                              was reset), server stopped included.",
                         ),
                         self.power.session_wh,
-                        format!(
-                            "{} {}",
-                            tr(fr, "en", "over"),
-                            power::duration(self.power.session_duration())
-                        ),
+                        power::duration(self.power.session_duration()),
                     ),
                     (
                         tr(fr, "Total cumulé", "Running total"),

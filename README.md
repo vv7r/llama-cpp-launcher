@@ -95,8 +95,8 @@ downloads, live statistics and GPU power tracking.
   size).
 - **GPU power** (NVIDIA): live wattage curve (Ctrl + wheel zooms in on a
   time window, dragging moves through time), energy used since the server
-  started (with Wh per 1000 generated tokens), since the app opened (with the
-  elapsed time) and in a running total — and its cost at your electricity
+  started (with Wh per 1000 generated tokens) and since the app opened, each
+  with its elapsed time, and in a running total — and its cost at your electricity
   price.
 
 **Benchmark**
