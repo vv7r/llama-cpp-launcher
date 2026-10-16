@@ -2123,40 +2123,41 @@ impl App {
 
                     for g in &self.gpus {
                         ui.add_space(10.0);
-                        let fraction = g.fraction();
-                        let color = match fraction {
-                            f if f >= 0.9 => theme::red(),
-                            f if f >= 0.7 => theme::orange(),
-                            _ => theme::green(),
-                        };
-                        ui.label(RichText::new("VRAM").color(theme::muted()).size(11.0));
-                        gauge(
-                            ui,
-                            fraction,
-                            color,
-                            &format!(
-                                "{:.1} / {:.1} {}",
-                                g.used_mib as f64 / 1024.0,
-                                g.total_mib as f64 / 1024.0,
-                                self.t("Go", "GB")
-                            ),
-                        )
-                        .on_hover_text(format!(
-                            "{}\n{} {} Mio / {} Mio ({:.0} %)\n{} {} Mio\n{} {} %\n\n{}",
-                            g.name,
-                            self.t("Utilisée :", "Used:"),
-                            g.used_mib,
-                            g.total_mib,
-                            fraction * 100.0,
-                            self.t("Libre :", "Free:"),
-                            g.total_mib.saturating_sub(g.used_mib),
-                            self.t("Charge GPU :", "GPU load:"),
-                            g.load,
-                            self.t(
-                                "Toute la carte : llama-server et les autres applications.",
-                                "The whole card: llama-server and every other application.",
-                            ),
-                        ));
+                        // Mémoire inconnue (carte Intel sous Linux) : les
+                        // watts seuls.
+                        if g.total_mib > 0 {
+                            let fraction = g.fraction();
+                            ui.label(RichText::new("VRAM").color(theme::muted()).size(11.0));
+                            let load = g
+                                .load
+                                .map(|l| format!("\n{} {l} %", self.t("Charge GPU :", "GPU load:")))
+                                .unwrap_or_default();
+                            gauge(
+                                ui,
+                                fraction,
+                                load_color(fraction),
+                                &format!(
+                                    "{:.1} / {:.1} {}",
+                                    g.used_mib as f64 / 1024.0,
+                                    g.total_mib as f64 / 1024.0,
+                                    self.t("Go", "GB")
+                                ),
+                            )
+                            .on_hover_text(format!(
+                                "{}\n{} {} Mio / {} Mio ({:.0} %)\n{} {} Mio{load}\n\n{}",
+                                g.name,
+                                self.t("Utilisée :", "Used:"),
+                                g.used_mib,
+                                g.total_mib,
+                                fraction * 100.0,
+                                self.t("Libre :", "Free:"),
+                                g.total_mib.saturating_sub(g.used_mib),
+                                self.t(
+                                    "Toute la carte : llama-server et les autres applications.",
+                                    "The whole card: llama-server and every other application.",
+                                ),
+                            ));
+                        }
                         if let Some(w) = g.power_w {
                             let limit = g
                                 .power_limit_w
@@ -3894,11 +3895,13 @@ impl App {
                 ui,
                 tr(
                     fr,
-                    "Aucun relevé : la consommation de la carte se lit avec nvidia-smi (cartes \
-                     NVIDIA uniquement), celle du processeur avec ses compteurs RAPL, que la \
-                     machine n'expose pas toujours.",
-                    "No reading: the card's power is read through nvidia-smi (NVIDIA cards \
-                     only), the processor's through its RAPL counters, which the machine does \
+                    "Aucun relevé : la consommation de la carte se lit avec nvidia-smi \
+                     (NVIDIA) ou, sous Linux, le pilote des cartes AMD et Intel (Windows ne la \
+                     donne pas pour ces cartes) ; celle du processeur avec ses compteurs RAPL, \
+                     que la machine n'expose pas toujours.",
+                    "No reading: the card's power is read through nvidia-smi (NVIDIA) or, on \
+                     Linux, the AMD and Intel drivers (Windows does not give it for those \
+                     cards); the processor's through its RAPL counters, which the machine does \
                      not always expose.",
                 ),
             );

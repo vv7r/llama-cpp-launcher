@@ -56,6 +56,7 @@ pub fn monitor() -> Receiver<Sample> {
 #[cfg(windows)]
 mod win {
     use super::SysSample;
+    use crate::pdh::{Counter, Query};
 
     #[repr(C)]
     struct MemoryStatusEx {
@@ -70,107 +71,29 @@ mod win {
         avail_extended_virtual: u64,
     }
 
-    /// `PDH_FMT_COUNTERVALUE` : statut puis union (ici le `double`).
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct FmtValue {
-        status: u32,
-        value: f64,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct FmtItem {
-        name: *const u16,
-        value: FmtValue,
-    }
-
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn GlobalMemoryStatusEx(status: *mut MemoryStatusEx) -> i32;
     }
 
-    #[link(name = "pdh")]
-    unsafe extern "system" {
-        fn PdhOpenQueryW(source: *const u16, user: usize, query: *mut isize) -> u32;
-        fn PdhAddEnglishCounterW(query: isize, path: *const u16, user: usize, counter: *mut isize) -> u32;
-        fn PdhCollectQueryData(query: isize) -> u32;
-        fn PdhGetFormattedCounterArrayW(
-            counter: isize,
-            format: u32,
-            size: *mut u32,
-            count: *mut u32,
-            items: *mut FmtItem,
-        ) -> u32;
-        fn PdhCloseQuery(query: isize) -> u32;
-    }
-
-    const PDH_FMT_DOUBLE: u32 = 0x0000_0200;
-    const PDH_MORE_DATA: u32 = 0x8000_07D2;
-    const PDH_CSTATUS_VALID_DATA: u32 = 0;
-    const PDH_CSTATUS_NEW_DATA: u32 = 1;
-
-    fn wide(s: &str) -> Vec<u16> {
-        s.encode_utf16().chain(std::iter::once(0)).collect()
-    }
-
     pub struct Probe {
-        query: isize,
-        cpu: Option<isize>,
-        energy: Option<isize>,
+        query: Option<Query>,
+        cpu: Option<Counter>,
+        energy: Option<Counter>,
     }
 
     impl Probe {
         pub fn new() -> Self {
-            let mut query = 0isize;
-            if unsafe { PdhOpenQueryW(std::ptr::null(), 0, &mut query) } != 0 {
-                return Probe { query: 0, cpu: None, energy: None };
-            }
-            // Noms anglais : les noms affichés sont traduits (« Compteur
-            // Énergie » sous Windows en français).
-            let add = |path: &str| {
-                let mut counter = 0isize;
-                let path = wide(path);
-                (unsafe { PdhAddEnglishCounterW(query, path.as_ptr(), 0, &mut counter) } == 0)
-                    .then_some(counter)
+            let Some(query) = Query::open() else {
+                return Probe { query: None, cpu: None, energy: None };
             };
-            let cpu = add(r"\Processor Information(_Total)\% Processor Utility")
-                .or_else(|| add(r"\Processor(_Total)\% Processor Time"));
-            let energy = add(r"\Energy Meter(*)\Power");
+            let cpu = query
+                .add(r"\Processor Information(_Total)\% Processor Utility")
+                .or_else(|| query.add(r"\Processor(_Total)\% Processor Time"));
+            let energy = query.add(r"\Energy Meter(*)\Power");
             // Premier relevé : les compteurs de taux en exigent deux.
-            unsafe { PdhCollectQueryData(query) };
-            Probe { query, cpu, energy }
-        }
-
-        /// Valeurs de toutes les instances d'un compteur : (nom, valeur).
-        fn values(&self, counter: isize) -> Vec<(String, f64)> {
-            let (mut size, mut count) = (0u32, 0u32);
-            let status = unsafe {
-                PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &mut size, &mut count, std::ptr::null_mut())
-            };
-            if status != PDH_MORE_DATA || size == 0 {
-                return Vec::new();
-            }
-            // Tampon aligné sur 8 octets : les éléments puis leurs noms.
-            let mut buf = vec![0u64; (size as usize).div_ceil(8)];
-            let items = buf.as_mut_ptr() as *mut FmtItem;
-            if unsafe { PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &mut size, &mut count, items) } != 0 {
-                return Vec::new();
-            }
-            (0..count as usize)
-                .filter_map(|i| {
-                    let item = unsafe { *items.add(i) };
-                    if !matches!(item.value.status, PDH_CSTATUS_VALID_DATA | PDH_CSTATUS_NEW_DATA) {
-                        return None;
-                    }
-                    let mut len = 0;
-                    while unsafe { *item.name.add(len) } != 0 {
-                        len += 1;
-                    }
-                    let name = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(item.name, len) });
-                    Some((name, item.value.value))
-                })
-                .collect()
+            query.collect();
+            Probe { query: Some(query), cpu, energy }
         }
 
         pub fn sample(&mut self) -> SysSample {
@@ -190,24 +113,16 @@ mod win {
                 out.ram_total = mem.total_phys;
                 out.ram_used = mem.total_phys.saturating_sub(mem.avail_phys);
             }
-            if self.query == 0 || unsafe { PdhCollectQueryData(self.query) } != 0 {
+            let Some(query) = self.query.as_ref().filter(|q| q.collect()) else {
                 return out;
-            }
+            };
             out.cpu_percent = self
                 .cpu
-                .and_then(|c| self.values(c).first().map(|(_, v)| v.clamp(0.0, 100.0) as f32));
+                .and_then(|c| query.values(c).first().map(|(_, v)| v.clamp(0.0, 100.0) as f32));
             // Instances RAPL : un boîtier (« …_PKG ») par processeur, et ses
             // cœurs, déjà compris dans le boîtier. En milliwatts.
-            out.cpu_power_w = self.energy.and_then(|c| super::package_watts(&self.values(c)));
+            out.cpu_power_w = self.energy.and_then(|c| super::package_watts(&query.values(c)));
             out
-        }
-    }
-
-    impl Drop for Probe {
-        fn drop(&mut self) {
-            if self.query != 0 {
-                unsafe { PdhCloseQuery(self.query) };
-            }
         }
     }
 }

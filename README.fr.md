@@ -287,12 +287,15 @@ Hugging Face, fichier partiel incohérent), le fichier partiel est supprimé et
 le téléchargement recommence de zéro. La console détaille chaque reprise.
 
 ### Divers
-- Barre du haut : état du serveur, jauge d'occupation de la VRAM et
-  consommation électrique de la carte graphique en watts (cartes NVIDIA, via
-  `nvidia-smi`), jauges de la mémoire vive et de la charge du processeur, et
-  consommation du processeur (compteurs RAPL : Windows les expose sans pilote,
-  Linux les réserve le plus souvent à root), alignés sur les boutons
-  Démarrer / Arrêter / Redémarrer.
+- Barre du haut : état du serveur, puis jauges RAM, VRAM (et watts de la
+  carte) et CPU (et watts du processeur), alignés sur les boutons Démarrer /
+  Arrêter / Redémarrer. Cartes graphiques : NVIDIA par `nvidia-smi` ; AMD et
+  Intel par les compteurs de performance de Windows (VRAM et charge, pas de
+  watts : Windows ne les donne pas pour ces cartes) ou, sous Linux, par leur
+  pilote (AMD : VRAM, charge et watts ; Intel dédiée : watts). Les puces
+  graphiques intégrées sont ignorées. Watts du processeur : compteurs RAPL,
+  que Windows expose sans pilote et que Linux réserve le plus souvent à
+  root.
 - Six thèmes : Sombre, Clair, Nord, Dracula, Gruvbox et Solarized clair. En
   thème clair, les boutons d'action sont teintés plutôt que pleins.
 - Interface bilingue FR/EN ; au premier lancement, la langue suit celle du
@@ -343,7 +346,7 @@ src/
 ├── sysmon.rs      # mémoire vive, charge et consommation du processeur
 ├── fattn.rs       # paires K/V FlashAttention compilées d'une release
 ├── bench.rs       # llama-bench et benchmark.md
-├── gpu.rs         # VRAM et consommation (nvidia-smi)
+├── gpu.rs         # VRAM, charge et consommation des cartes graphiques
 ├── hub.rs         # téléchargement depuis Hugging Face
 ├── updater.rs     # installation et mise à jour de llama.cpp
 ├── icon.rs        # icône (fenêtre et exe, via build.rs)

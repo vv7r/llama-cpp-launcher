@@ -115,9 +115,13 @@ downloads, live statistics and GPU power tracking.
   settings of each measurement; "missing only" skips what is already measured.
 
 **Everything else**
-- Top bar gauges: VRAM and GPU power (NVIDIA, via `nvidia-smi`), RAM,
-  processor load and processor power (RAPL counters: Windows exposes them
-  without a driver; Linux usually reserves them to root).
+- Top bar gauges: RAM, VRAM and GPU power, processor load and processor
+  power. Graphics cards: NVIDIA through `nvidia-smi`; AMD and Intel through
+  the Windows performance counters (VRAM and load, no power: Windows does not
+  give it for those cards) or, on Linux, their driver (AMD: VRAM, load and
+  power; Intel dedicated cards: power). Integrated graphics are left out.
+  Processor power comes from the RAPL counters: Windows exposes them without
+  a driver; Linux usually reserves them to root.
 - Six themes: Dark, Light, Nord, Dracula, Gruvbox, Solarized Light.
 - English and French; follows the system language on first launch.
 - The UI renders on the integrated GPU when there is one, leaving the whole
@@ -130,7 +134,8 @@ downloads, live statistics and GPU power tracking.
 - **Windows** 10 or 11, 64-bit, or **Linux** x86_64 with a graphical desktop
   (X11 or Wayland) and glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36
   and later). Also runs in WSL2 on Windows 11, through WSLg.
-- Optional: an NVIDIA GPU for the VRAM gauge and power tracking.
+- Optional: a graphics card for the VRAM gauge and power tracking (NVIDIA
+  everywhere; AMD and Intel with fewer readings, see above).
 - Only to build llama.cpp from source: Git, CMake, a C++ compiler (Visual Studio
   Build Tools on Windows, `build-essential` on Linux) and, for GPU builds, the
   CUDA Toolkit or the Vulkan SDK. The app tells you what is missing.
@@ -268,7 +273,7 @@ src/
 ├── process.rs     llama-server process and its output
 ├── stats.rs       per-request statistics from the server logs
 ├── power.rs       GPU and CPU power curves, energy and cost
-├── gpu.rs         VRAM and power through nvidia-smi
+├── gpu.rs         VRAM, load and power of the graphics cards
 ├── sysmon.rs      RAM, processor load and power
 ├── bench.rs       llama-bench and benchmark.md
 ├── hub.rs         Hugging Face listing and resumable downloads

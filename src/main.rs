@@ -12,6 +12,8 @@ mod gpu;
 mod hub;
 mod icon;
 mod params;
+#[cfg(windows)]
+mod pdh;
 mod power;
 mod process;
 mod profiles;
