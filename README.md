@@ -166,7 +166,9 @@ downloads, live statistics and GPU power tracking.
 The folder picker uses your desktop's file dialog (XDG portal), or `zenity`
 when no portal is available. On launch, the app adds itself to the
 applications menu with its icon (`~/.local/share/applications` and
-`~/.local/share/icons`), updated if the executable moves.
+`~/.local/share/icons`), updated if the executable moves. Under WSL, WSLg
+only reads the system folders: for the icon in the Windows taskbar, run once
+the `sudo` command the app shows in its console and in ⚙ Options.
 
 ### First launch
 

@@ -233,6 +233,9 @@ pub struct App {
     install_backend: updater::Backend,
     /// L'utilisateur a choisi le backend : ne plus appliquer la suggestion.
     install_backend_chosen: bool,
+    /// WSL : commande qui installe l'entrée lue par WSLg (icône dans la barre
+    /// des tâches de Windows), tant qu'elle manque.
+    wslg_command: Option<String>,
     /// Installation d'un prérequis en cours dans sa console : (clé, processus).
     /// Les outils sont détectés de nouveau à sa fermeture.
     tool_install: Option<(&'static str, std::process::Child)>,
@@ -353,6 +356,10 @@ impl App {
             install_backend: updater::Backend::Cpu,
             install_backend_chosen: false,
             tool_install: None,
+            #[cfg(not(windows))]
+            wslg_command: crate::desktop::wslg_command(),
+            #[cfg(windows)]
+            wslg_command: None,
             cfg,
         };
         app.refresh();
@@ -372,6 +379,15 @@ impl App {
         ));
         if let Some(e) = cfg_error {
             app.log(format!("! {e}"));
+        }
+        if let Some(command) = app.wslg_command.clone() {
+            app.log(app.t(
+                "WSL : pour l'icône dans la barre des tâches de Windows, lancez une fois dans un \
+                 terminal Ubuntu (aussi dans ⚙ Options) :",
+                "WSL: for the icon in the Windows taskbar, run once in an Ubuntu terminal (also \
+                 in ⚙ Options):",
+            ));
+            app.log(format!("  {command}"));
         }
         app
     }
@@ -2464,6 +2480,32 @@ impl App {
                                         actions.push(Action::AskDeleteVersion(dir.clone()));
                                     }
                                     ui.close();
+                                }
+                                if let Some(command) = &self.wslg_command {
+                                    ui.separator();
+                                    if ui
+                                        .button(self.t(
+                                            "Icône dans la barre des tâches (WSL)…",
+                                            "Icon in the taskbar (WSL)…",
+                                        ))
+                                        .on_hover_text(format!(
+                                            "{}\n\n{command}",
+                                            self.t(
+                                                "WSLg ne cherche les icônes que dans les dossiers \
+                                                 système. Copie la commande qui y installe celle de \
+                                                 l'app : collez-la une fois dans un terminal Ubuntu \
+                                                 (mot de passe demandé), puis relancez l'app.",
+                                                "WSLg only looks for icons in system folders. Copies \
+                                                 the command that installs the app's one there: \
+                                                 paste it once in an Ubuntu terminal (password \
+                                                 asked), then restart the app.",
+                                            )
+                                        ))
+                                        .clicked()
+                                    {
+                                        actions.push(Action::CopyText(command.clone()));
+                                        ui.close();
+                                    }
                                 }
                             })
                             .response

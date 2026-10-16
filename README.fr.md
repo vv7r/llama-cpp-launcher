@@ -39,7 +39,9 @@ Le choix d'un dossier passe par la boîte de dialogue du bureau (portail XDG),
 ou par `zenity` s'il n'y a pas de portail. Au lancement, l'application
 s'ajoute au menu des applications avec son icône (`~/.local/share/applications`
 et `~/.local/share/icons`) ; ces fichiers sont mis à jour si l'exécutable est
-déplacé.
+déplacé. Sous WSL, WSLg ne lit que les dossiers système : pour l'icône dans
+la barre des tâches de Windows, lancez une fois la commande `sudo` que l'app
+affiche dans sa console et dans ⚙ Options.
 
 Au premier démarrage, indiquez :
 
