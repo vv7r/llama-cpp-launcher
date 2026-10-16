@@ -204,6 +204,12 @@ Type K / V et Draft Cache K / V, un **⚠ orange** signale les valeurs dont la
 paire n'est pas compilée dans la release sélectionnée (versions de 2026 et
 plus récentes, qui l'indiquent dans leur DLL).
 
+**Options et modèle.** Le même ⚠ orange signale les valeurs que le modèle
+choisi ne permet pas : `--spec-type draft-mtp` sur un modèle sans couches
+MTP (gemma-4, par exemple : llama-server refuserait de démarrer), une taille
+de contexte au-delà de celle de l'entraînement du modèle. Le survol en donne
+la raison.
+
 ### Console
 Sortie `stdout`/`stderr` en temps réel, colorisée, défilement automatique,
 copie et effacement. Les débits `PP`/`TG` sont extraits des logs et affichés
@@ -227,8 +233,9 @@ logs :
 Les statistiques repartent de zéro à chaque démarrage du serveur, ou avec
 **Réinitialiser**.
 
-**Consommation GPU** — courbe de la puissance de la carte (NVIDIA), énergie
-consommée depuis le démarrage du serveur (avec les Wh pour 1000 tokens
+**Consommation** — courbes de la puissance de la carte graphique (NVIDIA) et
+du processeur, chacune affichable ou non (cases GPU et CPU), énergie
+consommée par la carte depuis le démarrage du serveur (avec les Wh pour 1000 tokens
 générés) et depuis l'ouverture de l'application, chacune avec sa durée, et en
 cumul conservé d'une session à l'autre, en Wh ou kWh. Le coût se calcule avec
 le prix du kWh indiqué (€, $, £ ou CHF). Dans la courbe, Ctrl + molette zoome
@@ -282,7 +289,10 @@ le téléchargement recommence de zéro. La console détaille chaque reprise.
 ### Divers
 - Barre du haut : état du serveur, jauge d'occupation de la VRAM et
   consommation électrique de la carte graphique en watts (cartes NVIDIA, via
-  `nvidia-smi`), alignés sur les boutons Démarrer / Arrêter / Redémarrer.
+  `nvidia-smi`), jauges de la mémoire vive et de la charge du processeur, et
+  consommation du processeur (compteurs RAPL : Windows les expose sans pilote,
+  Linux les réserve le plus souvent à root), alignés sur les boutons
+  Démarrer / Arrêter / Redémarrer.
 - Six thèmes : Sombre, Clair, Nord, Dracula, Gruvbox et Solarized clair. En
   thème clair, les boutons d'action sont teintés plutôt que pleins.
 - Interface bilingue FR/EN ; au premier lancement, la langue suit celle du
@@ -329,7 +339,8 @@ src/
 ├── cmdparse.rs    # import d'une ligne de commande
 ├── process.rs     # processus llama-server, flux de sortie, débits
 ├── stats.rs       # statistiques par requête (débits, contexte)
-├── power.rs       # consommation du GPU, énergie et coût
+├── power.rs       # consommation du GPU et du CPU, énergie et coût
+├── sysmon.rs      # mémoire vive, charge et consommation du processeur
 ├── fattn.rs       # paires K/V FlashAttention compilées d'une release
 ├── bench.rs       # llama-bench et benchmark.md
 ├── gpu.rs         # VRAM et consommation (nvidia-smi)

@@ -7,6 +7,7 @@ use crate::discovery::{self, ModelInfo, VersionInfo};
 use crate::fattn::FaSupport;
 use crate::gguf;
 use crate::gpu::{self, GpuMemory};
+use crate::sysmon::{self, SysSample};
 use crate::hub;
 use crate::params::{self, Group, Kind, ParamState};
 use crate::process::{self, ModelSource, ProcEvent, ServerProcess, Speeds};
@@ -179,6 +180,12 @@ pub struct App {
     /// Mémoire vidéo, rafraîchie toutes les deux secondes.
     gpus: Vec<GpuMemory>,
     gpu_rx: Receiver<gpu::Sample>,
+    /// Mémoire vive, charge et consommation du processeur.
+    sys_rx: Receiver<sysmon::Sample>,
+    sys: Option<SysSample>,
+    /// Courbes affichées dans l'onglet Consommation.
+    power_show_gpu: bool,
+    power_show_cpu: bool,
     confirm_delete: Option<PathBuf>,
     toast: Option<(String, Color32, Instant)>,
     last_save: Instant,
@@ -308,6 +315,10 @@ impl App {
             hub_progress: (0, 0),
             gpus: Vec::new(),
             gpu_rx: gpu::monitor(),
+            sys_rx: sysmon::monitor(),
+            sys: None,
+            power_show_gpu: true,
+            power_show_cpu: true,
             confirm_delete: None,
             toast: None,
             last_save: Instant::now(),
@@ -458,6 +469,13 @@ impl App {
     }
 
     /// Paires FlashAttention de la release sélectionnée, si elle les indique.
+    /// En-tête GGUF du modèle sélectionné, s'il a déjà été lu.
+    fn selected_meta(&self) -> Option<gguf::GgufMeta> {
+        self.meta
+            .get(Path::new(&self.selected_model))
+            .and_then(|c| c.meta.clone())
+    }
+
     fn current_fa(&self) -> Option<FaSupport> {
         self.version()
             .and_then(|v| self.fa_support.get(&v.dir))
@@ -1903,9 +1921,15 @@ impl eframe::App for App {
             }
             self.gpus = gpus;
         }
+        while let Ok((at, sample)) = self.sys_rx.try_recv() {
+            if let Some(w) = sample.cpu_power_w {
+                self.power.record_cpu(f64::from(w), at);
+            }
+            self.sys = Some(sample);
+        }
         // Le suivi réveille l'interface toutes les deux secondes pour
-        // rafraîchir la jauge, seulement s'il y a un GPU à afficher.
-        if !self.gpus.is_empty() {
+        // rafraîchir les jauges, seulement s'il y a quelque chose à afficher.
+        if !self.gpus.is_empty() || self.sys.is_some() {
             ctx.request_repaint_after(Duration::from_secs(2));
         }
 
@@ -2151,6 +2175,10 @@ impl App {
                                 ),
                             ));
                         }
+                    }
+
+                    if let Some(s) = &self.sys {
+                        self.system_gauges(ui, s);
                     }
 
                     if let Some(pp) = self.speeds.prompt {
@@ -2505,7 +2533,7 @@ impl App {
                                 let def = params::def(mm);
                                 let tip = param_tip(def, fr);
                                 field_label(ui, tr(fr, "Modèle vision", "Vision model"), &tip);
-                                choice_field(ui, def, &mut self.states[mm], &tip, fr, &KvCheck::default());
+                                choice_field(ui, def, &mut self.states[mm], &tip, fr, &ValueCheck::default());
                                 hint(
                                     ui,
                                     &format!(
@@ -2537,8 +2565,15 @@ impl App {
                         ) {
                             ui.add_space(4.0);
                             let fa = self.current_fa();
+                            let model = self.selected_meta();
+                            let extra_args = self.cfg.extra_args.clone();
+                            let checks = Checks {
+                                fa: fa.as_ref(),
+                                model: model.as_ref(),
+                                extra_args: &extra_args,
+                            };
                             let cfg = &mut self.cfg;
-                            param_grid_with(ui, Group::Server, &mut self.states, fr, fa.as_ref(), |ui| {
+                            param_grid_with(ui, Group::Server, &mut self.states, fr, &checks, |ui| {
                                 address_rows(ui, &mut cfg.host, &mut cfg.port, fr);
                             });
                             // Joignable depuis le réseau sans authentification.
@@ -2768,8 +2803,14 @@ impl App {
 
                 let fr = self.fr();
                 let fa = self.current_fa();
+                let model = self.selected_meta();
                 let states = &mut self.states;
                 let extra = &self.cfg.extra_args;
+                let checks = Checks {
+                    fa: fa.as_ref(),
+                    model: model.as_ref(),
+                    extra_args: extra,
+                };
 
                 egui::ScrollArea::vertical()
                     .id_salt("params_scroll")
@@ -2797,7 +2838,7 @@ impl App {
                                 .default_open(true)
                                 .show_background(false)
                                 .show(ui, |ui| {
-                                    param_grid(ui, group, states, fr, fa.as_ref());
+                                    param_grid(ui, group, states, fr, &checks);
                                 })
                                 .header_response
                                 .on_hover_text(group_tip);
@@ -3611,11 +3652,13 @@ impl App {
                 ),
                 (
                     StatsView::Power,
-                    tr(fr, "Consommation GPU", "GPU power"),
+                    tr(fr, "Consommation", "Power"),
                     tr(
                         fr,
-                        "Puissance tirée par la carte graphique, énergie consommée et son coût.",
-                        "Power drawn by the graphics card, energy used and its cost.",
+                        "Puissance tirée par la carte graphique et le processeur, énergie consommée \
+                         par la carte et son coût.",
+                        "Power drawn by the graphics card and the processor, energy used by the \
+                         card and its cost.",
                     ),
                 ),
             ] {
@@ -3842,14 +3885,17 @@ impl App {
     }
 
     fn power_view(&mut self, ui: &mut Ui, actions: &mut Vec<Action>, fr: bool) {
-        if self.power.samples.is_empty() {
+        if self.power.samples.is_empty() && self.power.cpu_samples.is_empty() {
             hint(
                 ui,
                 tr(
                     fr,
-                    "Aucun relevé : la consommation se lit avec nvidia-smi, sur les cartes \
-                     NVIDIA uniquement.",
-                    "No reading: power is read through nvidia-smi, on NVIDIA cards only.",
+                    "Aucun relevé : la consommation de la carte se lit avec nvidia-smi (cartes \
+                     NVIDIA uniquement), celle du processeur avec ses compteurs RAPL, que la \
+                     machine n'expose pas toujours.",
+                    "No reading: the card's power is read through nvidia-smi (NVIDIA cards \
+                     only), the processor's through its RAPL counters, which the machine does \
+                     not always expose.",
                 ),
             );
             return;
@@ -3994,8 +4040,16 @@ impl App {
             });
 
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            if let Some((min, mean, max)) = self.power.range() {
+        // Une ligne par courbe ; les Wh / 1000 tokens sont ceux de la carte.
+        for (series, name, color) in [
+            (power::Series::Gpu, "GPU", theme::orange()),
+            (power::Series::Cpu, "CPU", theme::accent()),
+        ] {
+            let Some((min, mean, max)) = self.power.range(series) else {
+                continue;
+            };
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(name).color(color).size(12.0));
                 ui.label(
                     RichText::new(format!(
                         "{} {} W · {} {} W · {} {} W",
@@ -4009,15 +4063,19 @@ impl App {
                     .color(theme::muted())
                     .size(12.0),
                 );
-            }
-            if let Some(per_tokens) = &per_tokens {
-                ui.label(RichText::new(format!("· {per_tokens}")).color(theme::muted()).size(12.0))
-                    .on_hover_text(tr(
-                        fr,
-                        "Énergie consommée depuis le démarrage du serveur, pour 1000 tokens générés.",
-                        "Energy used since the server started, per 1000 generated tokens.",
-                    ));
-            }
+                if let (power::Series::Gpu, Some(per_tokens)) = (series, &per_tokens) {
+                    ui.label(RichText::new(format!("· {per_tokens}")).color(theme::muted()).size(12.0))
+                        .on_hover_text(tr(
+                            fr,
+                            "Énergie consommée par la carte depuis le démarrage du serveur, pour \
+                             1000 tokens générés.",
+                            "Energy the card used since the server started, per 1000 generated \
+                             tokens.",
+                        ));
+                }
+            });
+        }
+        ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .button(tr(fr, "Remettre le total à zéro", "Reset the total"))
@@ -4052,24 +4110,48 @@ impl App {
             .filter_map(|g| g.power_limit_w)
             .map(f64::from)
             .sum::<f64>();
-        let color = theme::orange();
-        let points = self.power.decimated(2000);
-        ui.label(RichText::new(tr(fr, "Puissance (W)", "Power (W)")).strong().size(12.0).color(color))
-            .on_hover_text(tr(
-                fr,
-                "Relevé toutes les deux secondes, 24 h au plus. Ctrl + molette pour zoomer, \
-                 glissez pour vous déplacer dans le temps, double clic pour tout revoir.",
-                "Read every two seconds, 24 h at most. Ctrl + wheel to zoom, drag to move \
-                 through time, double click to see everything again.",
-            ));
-        // Axe vertical fixe, de 0 au plus haut de la limite de la carte et des
-        // relevés : seul le temps se parcourt.
-        let peak = points.iter().map(|p| p[1]).fold(0.0, f64::max);
-        let y_max = (limit.max(peak) * 1.08).max(10.0);
-        let (x_first, x_last) = match (points.first(), points.last()) {
-            (Some(a), Some(b)) => (a[0], b[0]),
-            _ => (0.0, 0.0),
+        let gpu_color = theme::orange();
+        let cpu_color = theme::accent();
+        let has_gpu = !self.power.samples.is_empty();
+        let has_cpu = !self.power.cpu_samples.is_empty();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(tr(fr, "Puissance (W)", "Power (W)")).strong().size(12.0))
+                .on_hover_text(tr(
+                    fr,
+                    "Relevé toutes les deux secondes, 24 h au plus. Ctrl + molette pour zoomer, \
+                     glissez pour vous déplacer dans le temps, double clic pour tout revoir.",
+                    "Read every two seconds, 24 h at most. Ctrl + wheel to zoom, drag to move \
+                     through time, double click to see everything again.",
+                ));
+            ui.add_space(8.0);
+            if has_gpu {
+                ui.checkbox(&mut self.power_show_gpu, RichText::new("GPU").color(gpu_color))
+                    .on_hover_text(tr(fr, "Courbe de la carte graphique.", "Graphics card curve."));
+            }
+            if has_cpu {
+                ui.checkbox(&mut self.power_show_cpu, RichText::new("CPU").color(cpu_color))
+                    .on_hover_text(tr(fr, "Courbe du processeur.", "Processor curve."));
+            }
+        });
+        let gpu_points = if has_gpu && self.power_show_gpu {
+            self.power.decimated(power::Series::Gpu, 2000)
+        } else {
+            Vec::new()
         };
+        let cpu_points = if has_cpu && self.power_show_cpu {
+            self.power.decimated(power::Series::Cpu, 2000)
+        } else {
+            Vec::new()
+        };
+        let limit = if gpu_points.is_empty() { 0.0 } else { limit };
+        // Axe vertical fixe, de 0 au plus haut de la limite de la carte et des
+        // relevés affichés : seul le temps se parcourt.
+        let shown = || gpu_points.iter().chain(cpu_points.iter());
+        let peak = shown().map(|p| p[1]).fold(0.0, f64::max);
+        let y_max = (limit.max(peak) * 1.08).max(10.0);
+        let x_first = shown().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+        let x_last = shown().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+        let (x_first, x_last) = if x_first <= x_last { (x_first, x_last) } else { (0.0, 0.0) };
         let plot = egui_plot::Plot::new("power_plot")
             .height(ui.available_height().clamp(140.0, 400.0) - 10.0)
             .allow_drag([true, false])
@@ -4129,13 +4211,17 @@ impl App {
                         .width(1.0),
                 );
             }
-            plot.line(
-                egui_plot::Line::new(tr(fr, "Puissance", "Power"), points)
-                    .color(color)
-                    .width(1.5)
-                    .fill(0.0)
-                    .fill_alpha(0.15),
-            );
+            for (name, points, color) in [("GPU", gpu_points, gpu_color), ("CPU", cpu_points, cpu_color)] {
+                if !points.is_empty() {
+                    plot.line(
+                        egui_plot::Line::new(name, points)
+                            .color(color)
+                            .width(1.5)
+                            .fill(0.0)
+                            .fill_alpha(0.15),
+                    );
+                }
+            }
         });
     }
 
@@ -5030,6 +5116,65 @@ impl App {
             });
         if !open {
             self.update_open = false;
+        }
+    }
+
+    /// Jauges de la barre du haut : mémoire vive, charge du processeur et sa
+    /// consommation (si la machine l'expose).
+    fn system_gauges(&self, ui: &mut Ui, s: &SysSample) {
+        let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
+        let level = |fraction: f32| match fraction {
+            f if f >= 0.9 => theme::red(),
+            f if f >= 0.7 => theme::orange(),
+            _ => theme::green(),
+        };
+        ui.add_space(10.0);
+        ui.label(RichText::new("RAM").color(theme::muted()).size(11.0));
+        let fraction = s.ram_fraction();
+        gauge(
+            ui,
+            fraction,
+            level(fraction),
+            &format!("{:.1} / {:.1} {}", gib(s.ram_used), gib(s.ram_total), self.t("Go", "GB")),
+        )
+        .on_hover_text(format!(
+            "{} {:.1} {} ({:.0} %)\n{} {:.1} {}\n\n{}",
+            self.t("Utilisée :", "Used:"),
+            gib(s.ram_used),
+            self.t("Go", "GB"),
+            fraction * 100.0,
+            self.t("Libre :", "Free:"),
+            gib(s.ram_total.saturating_sub(s.ram_used)),
+            self.t("Go", "GB"),
+            self.t(
+                "Mémoire vive de toute la machine. Les couches d'un modèle qui ne sont pas sur \
+                 la carte graphique y sont chargées.",
+                "System memory of the whole machine. The layers of a model that are not on the \
+                 graphics card are loaded there.",
+            ),
+        ));
+        if let Some(cpu) = s.cpu_percent {
+            ui.add_space(6.0);
+            ui.label(RichText::new("CPU").color(theme::muted()).size(11.0));
+            let fraction = (cpu / 100.0).clamp(0.0, 1.0);
+            bar(ui, 64.0, TOP_BAR_ITEM_HEIGHT, fraction, level(fraction), &format!("{cpu:.0} %"))
+                .on_hover_text(self.t(
+                    "Charge du processeur, tous cœurs confondus (comme le Gestionnaire des tâches).",
+                    "Processor load, all cores together (as in Task Manager).",
+                ));
+        }
+        if let Some(w) = s.cpu_power_w {
+            ui.label(RichText::new(format!("{w:.0} W")).color(theme::text()).size(12.0))
+                .on_hover_text(format!(
+                    "{} {w:.1} W\n\n{}",
+                    self.t("Processeur :", "Processor:"),
+                    self.t(
+                        "Puissance du processeur entier (boîtier, compteurs RAPL), relevée toutes \
+                         les deux secondes.",
+                        "Power of the whole processor (package, RAPL counters), read every two \
+                         seconds.",
+                    ),
+                ));
         }
     }
 
@@ -6022,8 +6167,17 @@ fn param_tip(def: &params::ParamDef, fr: bool) -> String {
 
 /// Grille libellé / contrôle des paramètres d'un groupe, utilisée par le
 /// panneau central.
-fn param_grid(ui: &mut Ui, group: Group, states: &mut [ParamState], fr: bool, fa: Option<&FaSupport>) {
-    param_grid_with(ui, group, states, fr, fa, |_| {});
+/// Ce qui rend une valeur inutilisable : paires K/V de la release, modèle
+/// choisi (et options hors catalogue, qui peuvent lui ajouter un modèle de
+/// brouillon).
+struct Checks<'a> {
+    fa: Option<&'a FaSupport>,
+    model: Option<&'a gguf::GgufMeta>,
+    extra_args: &'a [Vec<String>],
+}
+
+fn param_grid(ui: &mut Ui, group: Group, states: &mut [ParamState], fr: bool, checks: &Checks) {
+    param_grid_with(ui, group, states, fr, checks, |_| {});
 }
 
 /// Paramètre de type de cache KV : (nom du paramètre partenaire, est-ce K ?).
@@ -6044,14 +6198,14 @@ fn param_grid_with(
     group: Group,
     states: &mut [ParamState],
     fr: bool,
-    fa: Option<&FaSupport>,
+    checks: &Checks,
     leading: impl FnOnce(&mut Ui),
 ) {
     let value_of = |states: &[ParamState], name: &str| {
         params::index_of(name).map(|i| states[i].value.clone()).unwrap_or_default()
     };
     // FlashAttention désactivé : les paires K/V ne comptent plus.
-    let fa = fa.filter(|_| value_of(states, "--flash-attn") != "off");
+    let fa = checks.fa.filter(|_| value_of(states, "--flash-attn") != "off");
     egui::Grid::new(format!("grid_{group:?}"))
         .num_columns(2)
         .spacing([10.0, 7.0])
@@ -6062,22 +6216,27 @@ fn param_grid_with(
                     continue;
                 }
                 // Types de cache K/V : valeurs dont la paire n'est pas compilée.
-                let mut kv = KvCheck::default();
+                let mut kv = ValueCheck::default();
                 if let (Some(fa), Some((partner, is_k))) = (fa, kv_partner(def.name)) {
                     let other = value_of(states, partner);
                     let pair = |mine: &str| {
                         if is_k { (mine.to_string(), other.clone()) } else { (other.clone(), mine.to_string()) }
                     };
                     let state = &states[i];
+                    let reason = tr(
+                        fr,
+                        "Paire K/V non compilée pour FlashAttention dans la release sélectionnée.",
+                        "K/V pair not compiled for FlashAttention in the selected release.",
+                    );
                     kv.bad = std::iter::once(&String::new())
                         .chain(state.options.iter())
                         .filter(|o| {
                             let (k, v) = pair(o);
                             !fa.supports(&k, &v)
                         })
-                        .cloned()
+                        .map(|o| (o.clone(), reason.to_string()))
                         .collect();
-                    if kv.bad.contains(&state.value) {
+                    if kv.is_bad(&state.value) {
                         let (k, v) = pair(&state.value);
                         let name = |t: &str| if t.is_empty() { "f16".to_string() } else { t.to_string() };
                         kv.warning = Some(format!(
@@ -6102,6 +6261,22 @@ fn param_grid_with(
                                  KV cache type” (⚙ Options › Update).",
                             ),
                         ));
+                    }
+                }
+                // Valeurs que le modèle choisi ne permet pas.
+                if let Some(meta) = checks.model {
+                    let state = &states[i];
+                    for opt in &state.options {
+                        if let Some(conflict) = params::model_conflict(def.name, opt, meta, checks.extra_args) {
+                            kv.bad.push((opt.clone(), conflict_text(&conflict, meta, fr)));
+                        }
+                    }
+                    if kv.warning.is_none() {
+                        if let Some(conflict) =
+                            params::model_conflict(def.name, &state.value, meta, checks.extra_args)
+                        {
+                            kv.warning = Some(format!("⚠ {}", conflict_text(&conflict, meta, fr)));
+                        }
                     }
                 }
                 let state = &mut states[i];
@@ -6154,12 +6329,49 @@ fn flag_field(ui: &mut Ui, value: &mut String, tip: &str, fr: bool) {
     }
 }
 
-/// Valeurs d'un type de cache K/V dont la paire FlashAttention n'est pas
-/// compilée dans la release, et l'avertissement si la valeur choisie en est.
+/// Valeurs inutilisables d'une option, chacune avec sa raison (paire K/V
+/// non compilée dans la release, option que le modèle ne permet pas), et
+/// l'avertissement si la valeur choisie en est.
 #[derive(Default)]
-struct KvCheck {
-    bad: Vec<String>,
+struct ValueCheck {
+    bad: Vec<(String, String)>,
     warning: Option<String>,
+}
+
+impl ValueCheck {
+    fn reason(&self, value: &str) -> Option<&str> {
+        self.bad.iter().find(|(v, _)| v == value).map(|(_, r)| r.as_str())
+    }
+
+    fn is_bad(&self, value: &str) -> bool {
+        self.reason(value).is_some()
+    }
+}
+
+/// Explication d'une valeur que le modèle ne permet pas.
+fn conflict_text(conflict: &params::ModelConflict, meta: &gguf::GgufMeta, fr: bool) -> String {
+    let model = if meta.name.is_empty() { meta.architecture.as_str() } else { meta.name.as_str() };
+    match conflict {
+        params::ModelConflict::NoMtp => format!(
+            "{model} {}",
+            tr(
+                fr,
+                "n'a pas de couches MTP : llama-server refusera de démarrer avec draft-mtp. \
+                 Choisissez une autre méthode, ou « désactivé ».",
+                "has no MTP layers: llama-server will refuse to start with draft-mtp. Pick \
+                 another method, or “disabled”.",
+            )
+        ),
+        params::ModelConflict::BeyondTraining(train) => format!(
+            "{} {model} : {train} tokens. {}",
+            tr(fr, "Au-delà du contexte d'entraînement de", "Beyond the training context of"),
+            tr(
+                fr,
+                "llama.cpp l'accepte, mais les réponses se dégradent au-delà.",
+                "llama.cpp accepts it, but answers degrade beyond it.",
+            )
+        ),
+    }
 }
 
 fn choice_field(
@@ -6168,11 +6380,11 @@ fn choice_field(
     state: &mut ParamState,
     tip: &str,
     fr: bool,
-    kv: &KvCheck,
+    kv: &ValueCheck,
 ) {
     let disabled = tr(fr, "— désactivé —", "— disabled —");
     let mark = |opt: &str, text: String| -> RichText {
-        if kv.bad.iter().any(|b| b == opt) {
+        if kv.is_bad(opt) {
             RichText::new(format!("⚠ {text}")).color(theme::orange())
         } else {
             RichText::new(text)
@@ -6194,11 +6406,6 @@ fn choice_field(
         }
         None => tip,
     };
-    let bad_tip = tr(
-        fr,
-        "Paire K/V non compilée pour FlashAttention dans la release sélectionnée.",
-        "K/V pair not compiled for FlashAttention in the selected release.",
-    );
     let value = &mut state.value;
     let options = &state.options;
     ComboBox::from_id_salt(def.name)
@@ -6237,12 +6444,10 @@ fn choice_field(
                 } else {
                     shown
                 };
-                let bad = kv.bad.contains(opt);
                 ui.selectable_value(value, opt.clone(), mark(opt, text))
-                    .on_hover_text(if bad {
-                        format!("{opt}\n{bad_tip}")
-                    } else {
-                        opt.clone()
+                    .on_hover_text(match kv.reason(opt) {
+                        Some(reason) => format!("{opt}\n{reason}"),
+                        None => opt.clone(),
                     });
             }
         })

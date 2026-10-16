@@ -21,6 +21,25 @@ pub struct GgufMeta {
     pub embedding_length: Option<u64>,
     pub tensor_count: u64,
     pub has_chat_template: bool,
+    /// Couches de prédiction multi-tokens (MTP, `<arch>.nextn_predict_layers`),
+    /// exigées par `--spec-type draft-mtp`. `None` : clé absente, pas de MTP.
+    pub nextn_layers: Option<u64>,
+    /// Tenseurs MTP (`blk.N.nextn.*`) trouvés dans le fichier. Certaines
+    /// quantisations gardent la clé mais retirent ces tenseurs.
+    pub nextn_tensors: bool,
+    /// Nombre de fichiers d'un modèle scindé (`split.count`) : les tenseurs
+    /// MTP peuvent être dans une autre partie que la première.
+    pub split_count: Option<u64>,
+}
+
+impl GgufMeta {
+    /// Le modèle porte-t-il des couches MTP utilisables par `draft-mtp` ?
+    /// Pour un modèle scindé, seule la clé est vérifiable depuis la première
+    /// partie.
+    pub fn has_mtp(&self) -> bool {
+        self.nextn_layers.unwrap_or(0) > 0
+            && (self.nextn_tensors || self.split_count.unwrap_or(1) > 1)
+    }
 }
 
 const T_UINT8: u32 = 0;
@@ -197,10 +216,29 @@ pub fn read(path: &Path) -> anyhow::Result<GgufMeta> {
             _ if key.ends_with(".block_count") => {
                 meta.block_count = r.number(vtype)?.or(meta.block_count);
             }
+            "split.count" => meta.split_count = r.number(vtype)?,
+            _ if key.ends_with(".nextn_predict_layers") => {
+                meta.nextn_layers = r.number(vtype)?.or(meta.nextn_layers);
+            }
             _ if key.ends_with(".embedding_length") => {
                 meta.embedding_length = r.number(vtype)?.or(meta.embedding_length);
             }
             _ => r.skip_value(vtype)?,
+        }
+    }
+
+    // Noms des tenseurs (le contenu n'est pas lu), seulement s'il faut
+    // vérifier la présence des tenseurs MTP.
+    if meta.nextn_layers.unwrap_or(0) > 0 {
+        for _ in 0..meta.tensor_count.min(1_000_000) {
+            let name = r.string()?;
+            let dims = r.u32()?;
+            anyhow::ensure!(dims <= 8, "tenseur GGUF invalide");
+            r.skip(u64::from(dims) * 8 + 4 + 8)?;
+            if name.contains(".nextn.") || name.starts_with("nextn.") {
+                meta.nextn_tensors = true;
+                break;
+            }
         }
     }
 
@@ -215,7 +253,15 @@ pub struct Cached {
     pub modified: u64,
     /// `None` : fichier illisible (en-tête invalide).
     pub meta: Option<GgufMeta>,
+    /// Version des champs lus (`FORMAT`) : une entrée plus ancienne est
+    /// relue, sinon un champ ajouté depuis y resterait vide pour toujours.
+    #[serde(default)]
+    pub format: u32,
 }
+
+/// Incrémenté à chaque champ ajouté à `GgufMeta`. 2 : MTP
+/// (`nextn_layers`, `nextn_tensors`, `split_count`).
+const FORMAT: u32 = 2;
 
 /// Taille et date de modification (secondes) d'un fichier.
 pub fn stamp(path: &Path) -> Option<(u64, u64)> {
@@ -236,12 +282,13 @@ pub fn read_cached(path: &Path) -> Cached {
         size,
         modified,
         meta: read(path).ok(),
+        format: FORMAT,
     }
 }
 
 /// L'entrée correspond-elle encore au fichier sur le disque ?
 pub fn is_fresh(entry: &Cached, path: &Path) -> bool {
-    stamp(path) == Some((entry.size, entry.modified))
+    entry.format == FORMAT && stamp(path) == Some((entry.size, entry.modified))
 }
 
 fn cache_path() -> PathBuf {
@@ -276,5 +323,4 @@ mod timing {
             super::read(&path).unwrap();
         }
         println!("{:?} par lecture", t.elapsed() / 20);
-    }
-}
+    }}

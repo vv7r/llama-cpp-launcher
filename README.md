@@ -82,6 +82,9 @@ downloads, live statistics and GPU power tracking.
   (`GGML_CUDA_FA_QUANTS=all`): by default llama.cpp only compiles the CUDA
   kernels for f16-f16, q4_0-q4_0, q8_0-q8_0 and bf16-bf16. The cache-type lists
   flag with ⚠ any K/V pair the selected build does not support.
+- Values the selected model cannot use are flagged the same way, in orange:
+  `--spec-type draft-mtp` on a model without MTP layers (llama-server would
+  refuse to start), a context size beyond the model's training context.
 
 **Models**
 - Recursive scan of your models folder; split models are grouped, `mmproj`
@@ -98,8 +101,9 @@ downloads, live statistics and GPU power tracking.
   logs: min, **token-weighted average**, median, max, last, draft acceptance
   rate, and charts of speed versus context size (hover a point for the prompt
   size).
-- **GPU power** (NVIDIA): live wattage curve (Ctrl + wheel zooms in on a
-  time window, dragging moves through time), energy used since the server
+- **Power**: live wattage curves of the graphics card (NVIDIA) and of the
+  processor, each one can be hidden (Ctrl + wheel zooms in on a time window,
+  dragging moves through time); energy the card used since the server
   started (with Wh per 1000 generated tokens) and since the app opened, each
   with its elapsed time, and in a running total — and its cost at your electricity
   price.
@@ -111,7 +115,9 @@ downloads, live statistics and GPU power tracking.
   settings of each measurement; "missing only" skips what is already measured.
 
 **Everything else**
-- VRAM gauge and GPU power in the top bar (NVIDIA, via `nvidia-smi`).
+- Top bar gauges: VRAM and GPU power (NVIDIA, via `nvidia-smi`), RAM,
+  processor load and processor power (RAPL counters: Windows exposes them
+  without a driver; Linux usually reserves them to root).
 - Six themes: Dark, Light, Nord, Dracula, Gruvbox, Solarized Light.
 - English and French; follows the system language on first launch.
 - The UI renders on the integrated GPU when there is one, leaving the whole
@@ -261,8 +267,9 @@ src/
 ├── gguf.rs        GGUF header reader
 ├── process.rs     llama-server process and its output
 ├── stats.rs       per-request statistics from the server logs
-├── power.rs       GPU power curve, energy and cost
+├── power.rs       GPU and CPU power curves, energy and cost
 ├── gpu.rs         VRAM and power through nvidia-smi
+├── sysmon.rs      RAM, processor load and power
 ├── bench.rs       llama-bench and benchmark.md
 ├── hub.rs         Hugging Face listing and resumable downloads
 ├── updater.rs     llama.cpp install, update and release management

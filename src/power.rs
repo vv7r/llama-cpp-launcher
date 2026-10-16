@@ -21,8 +21,11 @@ pub struct PowerLog {
     /// Début du compteur de session : ouverture de l'application, ou dernière
     /// réinitialisation de la courbe.
     session_start: Instant,
-    /// (secondes depuis l'origine, watts).
+    /// (secondes depuis l'origine, watts) de la carte graphique.
     pub samples: Vec<[f64; 2]>,
+    /// Même chose pour le processeur (`sysmon`), sur la même échelle de
+    /// temps. Courbe seulement : l'énergie comptée est celle du GPU.
+    pub cpu_samples: Vec<[f64; 2]>,
     /// Énergie depuis l'ouverture de l'application (ou la réinitialisation
     /// de la courbe), en Wh.
     pub session_wh: f64,
@@ -44,6 +47,7 @@ impl PowerLog {
             last: None,
             session_start: Instant::now(),
             samples: Vec::new(),
+            cpu_samples: Vec::new(),
             session_wh: 0.0,
             server_wh: 0.0,
             server_secs: 0.0,
@@ -73,9 +77,26 @@ impl PowerLog {
         wh
     }
 
-    /// Vide la courbe et le compteur de session.
+    /// Relevé de la consommation du processeur, pour sa courbe.
+    pub fn record_cpu(&mut self, watts: f64, now: Instant) {
+        let secs = now.saturating_duration_since(self.origin).as_secs_f64() + self.origin_offset;
+        self.cpu_samples.push([secs, watts]);
+        if self.cpu_samples.len() > KEPT {
+            self.cpu_samples.remove(0);
+        }
+    }
+
+    fn series(&self, series: Series) -> &[[f64; 2]] {
+        match series {
+            Series::Gpu => &self.samples,
+            Series::Cpu => &self.cpu_samples,
+        }
+    }
+
+    /// Vide les courbes et le compteur de session.
     pub fn reset(&mut self) {
         self.samples.clear();
+        self.cpu_samples.clear();
         self.session_wh = 0.0;
         self.session_start = Instant::now();
     }
@@ -104,14 +125,15 @@ impl PowerLog {
     /// relevés font 43 200 points, copiés et tracés à chaque image. Chaque
     /// tranche garde son minimum et son maximum, pour que les pics restent
     /// visibles.
-    pub fn decimated(&self, max: usize) -> Vec<[f64; 2]> {
-        let n = self.samples.len();
+    pub fn decimated(&self, series: Series, max: usize) -> Vec<[f64; 2]> {
+        let samples = self.series(series);
+        let n = samples.len();
         if n <= max || max < 2 {
-            return self.samples.clone();
+            return samples.to_vec();
         }
         let bucket = n.div_ceil(max / 2);
         let mut out = Vec::with_capacity(max);
-        for chunk in self.samples.chunks(bucket) {
+        for chunk in samples.chunks(bucket) {
             let lo = chunk.iter().min_by(|a, b| a[1].total_cmp(&b[1])).unwrap();
             let hi = chunk.iter().max_by(|a, b| a[1].total_cmp(&b[1])).unwrap();
             if lo[0] <= hi[0] {
@@ -124,16 +146,24 @@ impl PowerLog {
     }
 
     /// Minimum, moyenne et maximum des watts relevés.
-    pub fn range(&self) -> Option<(f64, f64, f64)> {
-        if self.samples.is_empty() {
+    pub fn range(&self, series: Series) -> Option<(f64, f64, f64)> {
+        let samples = self.series(series);
+        if samples.is_empty() {
             return None;
         }
-        let w = self.samples.iter().map(|s| s[1]);
+        let w = samples.iter().map(|s| s[1]);
         let min = w.clone().fold(f64::INFINITY, f64::min);
         let max = w.clone().fold(f64::NEG_INFINITY, f64::max);
-        let mean = w.sum::<f64>() / self.samples.len() as f64;
+        let mean = w.sum::<f64>() / samples.len() as f64;
         Some((min, mean, max))
     }
+}
+
+/// Courbe de consommation : carte graphique ou processeur.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Series {
+    Gpu,
+    Cpu,
 }
 
 /// Heure murale d'un point de la courbe : `14:05`, ou `14:05:30` avec les
@@ -197,16 +227,21 @@ mod tests {
         assert_eq!(log.server_duration(), Duration::from_secs(2));
         // Un trou d'une minute (veille) n'est pas compté.
         assert_eq!(log.record(300.0, true, t0 + Duration::from_secs(64)), 0.0);
-        assert_eq!(log.range(), Some((180.0, 300.0, 360.0)));
+        assert_eq!(log.range(Series::Gpu), Some((180.0, 300.0, 360.0)));
+        // Processeur : sa propre courbe, sans énergie comptée.
+        log.record_cpu(40.0, t0 + Duration::from_secs(2));
+        log.record_cpu(60.0, t0 + Duration::from_secs(4));
+        assert_eq!(log.range(Series::Cpu), Some((40.0, 50.0, 60.0)));
+        assert!((log.session_wh - 0.3).abs() < 1e-9);
         log.reset();
-        assert!(log.samples.is_empty() && log.session_wh == 0.0);
+        assert!(log.samples.is_empty() && log.cpu_samples.is_empty() && log.session_wh == 0.0);
     }
 
     #[test]
     fn decimation_keeps_peaks() {
         let mut log = PowerLog::new();
         log.samples = (0..10_000).map(|i| [i as f64, if i == 5_000 { 400.0 } else { 20.0 }]).collect();
-        let d = log.decimated(1000);
+        let d = log.decimated(Series::Gpu, 1000);
         assert!(d.len() <= 1000);
         assert!(d.iter().any(|p| p[1] == 400.0), "le pic reste visible");
         assert!(d.windows(2).all(|w| w[0][0] <= w[1][0]), "abscisses croissantes");

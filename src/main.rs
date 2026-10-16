@@ -16,6 +16,7 @@ mod power;
 mod process;
 mod profiles;
 mod stats;
+mod sysmon;
 mod theme;
 mod updater;
 

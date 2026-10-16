@@ -794,9 +794,89 @@ pub fn from_map(map: &BTreeMap<String, String>) -> Vec<ParamState> {
     states
 }
 
+/// Valeur d'une option que le modèle choisi ne permet pas (marquée en
+/// orange dans les listes).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ModelConflict {
+    /// `--spec-type draft-mtp` sur un modèle sans couches MTP, et sans modèle
+    /// de brouillon : llama-server refuse de démarrer.
+    NoMtp,
+    /// Contexte plus grand que celui de l'entraînement (`n_ctx_train`) :
+    /// llama.cpp prévient d'un « possible training context overflow ».
+    BeyondTraining(u64),
+}
+
+/// Options de llama-server qui désignent un modèle de brouillon
+/// (`common/arg.cpp`) : celui-ci peut alors porter les couches MTP.
+const DRAFT_MODEL_FLAGS: [&str; 7] = [
+    "--spec-draft-model",
+    "-md",
+    "--model-draft",
+    "--spec-draft-hf",
+    "-hfd",
+    "-hfrd",
+    "--hf-repo-draft",
+];
+
+pub fn model_conflict(
+    name: &str,
+    value: &str,
+    meta: &crate::gguf::GgufMeta,
+    extra_args: &[Vec<String>],
+) -> Option<ModelConflict> {
+    match name {
+        "--spec-type" => {
+            let mtp = value.split(',').any(|t| t.trim() == "draft-mtp");
+            let draft_model = extra_args.iter().any(|option| {
+                option
+                    .first()
+                    .is_some_and(|a| DRAFT_MODEL_FLAGS.contains(&a.split('=').next().unwrap_or("")))
+            });
+            (mtp && !meta.has_mtp() && !draft_model).then_some(ModelConflict::NoMtp)
+        }
+        "--ctx-size" => {
+            let ctx: u64 = value.parse().ok()?;
+            let train = meta.context_length?;
+            (ctx > train).then_some(ModelConflict::BeyondTraining(train))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flags_values_the_model_cannot_use() {
+        use crate::gguf::GgufMeta;
+        let gemma = GgufMeta { context_length: Some(131072), ..Default::default() };
+        let qwen = GgufMeta {
+            context_length: Some(262144),
+            nextn_layers: Some(1),
+            nextn_tensors: true,
+            ..Default::default()
+        };
+        let none: [Vec<String>; 0] = [];
+        assert_eq!(model_conflict("--spec-type", "draft-mtp", &gemma, &none), Some(ModelConflict::NoMtp));
+        assert_eq!(model_conflict("--spec-type", "draft-mtp", &qwen, &none), None);
+        assert_eq!(model_conflict("--spec-type", "ngram-mod", &gemma, &none), None);
+        // Un modèle de brouillon peut porter les couches MTP.
+        let md = [vec!["-md".to_string(), "mtp.gguf".to_string()]];
+        assert_eq!(model_conflict("--spec-type", "draft-mtp", &gemma, &md), None);
+        // Clé gardée mais tenseurs retirés : pas de MTP.
+        let stripped = GgufMeta { nextn_layers: Some(1), ..Default::default() };
+        assert_eq!(model_conflict("--spec-type", "draft-mtp", &stripped, &none), Some(ModelConflict::NoMtp));
+        // Modèle scindé : les tenseurs peuvent être dans une autre partie.
+        let split = GgufMeta { nextn_layers: Some(1), split_count: Some(2), ..Default::default() };
+        assert_eq!(model_conflict("--spec-type", "draft-mtp", &split, &none), None);
+
+        assert_eq!(model_conflict("--ctx-size", "262144", &gemma, &none), Some(ModelConflict::BeyondTraining(131072)));
+        assert_eq!(model_conflict("--ctx-size", "131072", &gemma, &none), None);
+        assert_eq!(model_conflict("--ctx-size", "0", &gemma, &none), None);
+        // Contexte d'entraînement inconnu : rien n'est signalé.
+        assert_eq!(model_conflict("--ctx-size", "999999", &GgufMeta::default(), &none), None);
+    }
 
     fn only(name: &str, value: &str) -> Vec<ParamState> {
         let mut states = default_states();
