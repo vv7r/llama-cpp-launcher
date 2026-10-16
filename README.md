@@ -103,7 +103,8 @@ downloads, live statistics and GPU power tracking.
   size).
 - **Power**: live wattage curves of the graphics card (NVIDIA) and of the
   processor, each one can be hidden (Ctrl + wheel zooms in on a time window,
-  dragging moves through time); energy the card used since the server
+  dragging moves through time); energy the card and the processor used
+  (hover a value for the split) since the server
   started (with Wh per 1000 generated tokens) and since the app opened, each
   with its elapsed time, and in a running total — and its cost at your electricity
   price.
@@ -163,7 +164,9 @@ downloads, live statistics and GPU power tracking.
    ```
 
 The folder picker uses your desktop's file dialog (XDG portal), or `zenity`
-when no portal is available.
+when no portal is available. On launch, the app adds itself to the
+applications menu with its icon (`~/.local/share/applications` and
+`~/.local/share/icons`), updated if the executable moves.
 
 ### First launch
 
@@ -279,7 +282,8 @@ src/
 ├── hub.rs         Hugging Face listing and resumable downloads
 ├── updater.rs     llama.cpp install, update and release management
 ├── fattn.rs       FlashAttention K/V pairs compiled in a CUDA build
-├── icon.rs        application icon (window, and .exe on Windows)
+├── icon.rs        application icon (window, .exe on Windows, PNG on Linux)
+├── desktop.rs     Linux menu entry and icon (~/.local/share)
 └── theme.rs       themes and colored action buttons
 ```
 

@@ -18,22 +18,28 @@ pub struct PowerLog {
     /// Secondes écoulées dans cette minute à l'instant `origin`.
     origin_offset: f64,
     last: Option<Instant>,
+    last_cpu: Option<Instant>,
     /// Début du compteur de session : ouverture de l'application, ou dernière
     /// réinitialisation de la courbe.
     session_start: Instant,
     /// (secondes depuis l'origine, watts) de la carte graphique.
     pub samples: Vec<[f64; 2]>,
     /// Même chose pour le processeur (`sysmon`), sur la même échelle de
-    /// temps. Courbe seulement : l'énergie comptée est celle du GPU.
+    /// temps.
     pub cpu_samples: Vec<[f64; 2]>,
     /// Énergie depuis l'ouverture de l'application (ou la réinitialisation
-    /// de la courbe), en Wh.
+    /// de la courbe), carte graphique et processeur, en Wh.
     pub session_wh: f64,
-    /// Énergie depuis le démarrage du serveur, en Wh.
+    /// Énergie depuis le démarrage du serveur, carte et processeur, en Wh.
     pub server_wh: f64,
-    /// Temps de fonctionnement du serveur compté avec `server_wh`, en
-    /// secondes.
+    /// Part du processeur dans `session_wh` et `server_wh`.
+    pub session_cpu_wh: f64,
+    pub server_cpu_wh: f64,
+    /// Temps de fonctionnement du serveur compté avec son énergie, par les
+    /// relevés de la carte et par ceux du processeur (chacun le sien : l'un
+    /// peut manquer), en secondes.
     server_secs: f64,
+    server_cpu_secs: f64,
 }
 
 impl PowerLog {
@@ -45,12 +51,16 @@ impl PowerLog {
             origin_wall: wall.with_second(0).and_then(|w| w.with_nanosecond(0)).unwrap_or(wall),
             origin_offset,
             last: None,
+            last_cpu: None,
             session_start: Instant::now(),
             samples: Vec::new(),
             cpu_samples: Vec::new(),
             session_wh: 0.0,
             server_wh: 0.0,
+            session_cpu_wh: 0.0,
+            server_cpu_wh: 0.0,
             server_secs: 0.0,
+            server_cpu_secs: 0.0,
         }
     }
 
@@ -78,12 +88,29 @@ impl PowerLog {
     }
 
     /// Relevé de la consommation du processeur, pour sa courbe.
-    pub fn record_cpu(&mut self, watts: f64, now: Instant) {
+    /// Relevé du processeur : sa courbe, et son énergie ajoutée aux
+    /// compteurs (renvoyée en Wh, comme `record`).
+    pub fn record_cpu(&mut self, watts: f64, server_running: bool, now: Instant) -> f64 {
+        let dt = match self.last_cpu {
+            Some(prev) => now.saturating_duration_since(prev).as_secs_f64(),
+            None => 0.0,
+        };
+        let dt = if dt <= MAX_GAP_SECS { dt } else { 0.0 };
+        let wh = watts * dt / 3600.0;
+        self.last_cpu = Some(now);
+        self.session_wh += wh;
+        self.session_cpu_wh += wh;
+        if server_running {
+            self.server_wh += wh;
+            self.server_cpu_wh += wh;
+            self.server_cpu_secs += dt;
+        }
         let secs = now.saturating_duration_since(self.origin).as_secs_f64() + self.origin_offset;
         self.cpu_samples.push([secs, watts]);
         if self.cpu_samples.len() > KEPT {
             self.cpu_samples.remove(0);
         }
+        wh
     }
 
     fn series(&self, series: Series) -> &[[f64; 2]] {
@@ -98,6 +125,7 @@ impl PowerLog {
         self.samples.clear();
         self.cpu_samples.clear();
         self.session_wh = 0.0;
+        self.session_cpu_wh = 0.0;
         self.session_start = Instant::now();
     }
 
@@ -108,13 +136,15 @@ impl PowerLog {
 
     pub fn reset_server(&mut self) {
         self.server_wh = 0.0;
+        self.server_cpu_wh = 0.0;
         self.server_secs = 0.0;
+        self.server_cpu_secs = 0.0;
     }
 
     /// Temps pendant lequel le serveur a tourné depuis son démarrage (ou la
     /// réinitialisation des statistiques), compté avec son énergie.
     pub fn server_duration(&self) -> Duration {
-        Duration::from_secs_f64(self.server_secs)
+        Duration::from_secs_f64(self.server_secs.max(self.server_cpu_secs))
     }
 
     pub fn origin_wall(&self) -> DateTime<Local> {
@@ -228,13 +258,19 @@ mod tests {
         // Un trou d'une minute (veille) n'est pas compté.
         assert_eq!(log.record(300.0, true, t0 + Duration::from_secs(64)), 0.0);
         assert_eq!(log.range(Series::Gpu), Some((180.0, 300.0, 360.0)));
-        // Processeur : sa propre courbe, sans énergie comptée.
-        log.record_cpu(40.0, t0 + Duration::from_secs(2));
-        log.record_cpu(60.0, t0 + Duration::from_secs(4));
-        assert_eq!(log.range(Series::Cpu), Some((40.0, 50.0, 60.0)));
-        assert!((log.session_wh - 0.3).abs() < 1e-9);
+        // Processeur : sa courbe, et son énergie ajoutée aux compteurs
+        // (720 W pendant 2 s = 0,4 Wh, serveur en marche).
+        assert_eq!(log.record_cpu(40.0, true, t0 + Duration::from_secs(2)), 0.0);
+        let wh = log.record_cpu(720.0, true, t0 + Duration::from_secs(4));
+        assert!((wh - 0.4).abs() < 1e-9);
+        assert_eq!(log.range(Series::Cpu), Some((40.0, 380.0, 720.0)));
+        assert!((log.session_wh - 0.7).abs() < 1e-9);
+        assert!((log.session_cpu_wh - 0.4).abs() < 1e-9);
+        assert!((log.server_wh - 0.6).abs() < 1e-9);
+        assert!((log.server_cpu_wh - 0.4).abs() < 1e-9);
         log.reset();
         assert!(log.samples.is_empty() && log.cpu_samples.is_empty() && log.session_wh == 0.0);
+        assert_eq!(log.session_cpu_wh, 0.0);
     }
 
     #[test]

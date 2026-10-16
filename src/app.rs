@@ -1923,7 +1923,11 @@ impl eframe::App for App {
         }
         while let Ok((at, sample)) = self.sys_rx.try_recv() {
             if let Some(w) = sample.cpu_power_w {
-                self.power.record_cpu(f64::from(w), at);
+                let running = self.running();
+                self.energy_total_wh += self.power.record_cpu(f64::from(w), running, at);
+                if self.cfg.energy_since.is_empty() {
+                    self.cfg.energy_since = chrono::Local::now().format("%d/%m/%Y").to_string();
+                }
             }
             self.sys = Some(sample);
         }
@@ -3660,10 +3664,10 @@ impl App {
                     tr(fr, "Consommation", "Power"),
                     tr(
                         fr,
-                        "Puissance tirée par la carte graphique et le processeur, énergie consommée \
-                         par la carte et son coût.",
-                        "Power drawn by the graphics card and the processor, energy used by the \
-                         card and its cost.",
+                        "Puissance tirée par la carte graphique et le processeur, énergie \
+                         consommée et son coût.",
+                        "Power drawn by the graphics card and the processor, energy used and its \
+                         cost.",
                     ),
                 ),
             ] {
@@ -3967,11 +3971,13 @@ impl App {
                         tr(fr, "Depuis le démarrage du serveur", "Since the server started"),
                         tr(
                             fr,
-                            "Énergie consommée par la carte pendant que le serveur tourne, \
-                             depuis son dernier démarrage.",
-                            "Energy the card used while the server runs, since its last start.",
+                            "Énergie consommée par la carte graphique et le processeur pendant \
+                             que le serveur tourne, depuis son dernier démarrage.",
+                            "Energy the graphics card and the processor used while the server \
+                             runs, since its last start.",
                         ),
                         self.power.server_wh,
+                        Some(self.power.server_cpu_wh),
                         if self.power.server_duration().is_zero() {
                             String::new()
                         } else {
@@ -3982,23 +3988,29 @@ impl App {
                         tr(fr, "Depuis l'ouverture de l'application", "Since the app opened"),
                         tr(
                             fr,
-                            "Toute la consommation de la carte depuis l'ouverture de \
-                             l'application (ou la réinitialisation de la courbe), serveur \
-                             arrêté compris.",
-                            "All the card's consumption since the app opened (or the curve \
-                             was reset), server stopped included.",
+                            "Toute la consommation de la carte graphique et du processeur \
+                             depuis l'ouverture de l'application (ou la réinitialisation de la \
+                             courbe), serveur arrêté compris.",
+                            "All the consumption of the graphics card and the processor since \
+                             the app opened (or the curve was reset), server stopped included.",
                         ),
                         self.power.session_wh,
+                        Some(self.power.session_cpu_wh),
                         power::duration(self.power.session_duration()),
                     ),
                     (
                         tr(fr, "Total cumulé", "Running total"),
                         tr(
                             fr,
-                            "Cumul conservé d'une session à l'autre, depuis la date indiquée.",
-                            "Total kept from one session to the next, since the date shown.",
+                            "Cumul conservé d'une session à l'autre, depuis la date indiquée : \
+                             carte graphique et processeur (le processeur n'est compté que depuis \
+                             la version qui le mesure).",
+                            "Total kept from one session to the next, since the date shown: \
+                             graphics card and processor (the processor only counts since the \
+                             version that measures it).",
                         ),
                         self.energy_total_wh,
+                        None,
                         format!("{} {since}", tr(fr, "depuis le", "since")),
                     ),
                 ];
@@ -4018,7 +4030,7 @@ impl App {
                 };
                 let width = rows
                     .iter()
-                    .map(|r| measure(ui, &r.3, &mono))
+                    .map(|r| measure(ui, &r.4, &mono))
                     .fold(measure(ui, head, &head_font), f32::max);
                 let right_cell = |ui: &mut Ui, text: &str, font: egui::FontId, color| {
                     let height = ui.fonts_mut(|f| f.row_height(&font));
@@ -4032,9 +4044,16 @@ impl App {
                 }
                 right_cell(ui, head, head_font.clone(), theme::accent());
                 ui.end_row();
-                for (label, tip, wh, time) in rows {
+                for (label, tip, wh, cpu_wh, time) in rows {
                     ui.label(label).on_hover_text(tip);
-                    ui.label(RichText::new(power::energy(wh, fr)).monospace().size(12.0));
+                    let energy = ui.label(RichText::new(power::energy(wh, fr)).monospace().size(12.0));
+                    if let Some(cpu) = cpu_wh {
+                        energy.on_hover_text(format!(
+                            "GPU {}\nCPU {}",
+                            power::energy((wh - cpu).max(0.0), fr),
+                            power::energy(cpu, fr)
+                        ));
+                    }
                     ui.label(
                         RichText::new(power::cost(wh, self.cfg.kwh_price, &self.cfg.currency, fr))
                             .monospace()
@@ -4047,7 +4066,9 @@ impl App {
             });
 
         ui.add_space(4.0);
-        // Une ligne par courbe ; les Wh / 1000 tokens sont ceux de la carte.
+        // Une ligne par courbe ; les Wh / 1000 tokens (carte et processeur)
+        // sur la première.
+        let mut first = true;
         for (series, name, color) in [
             (power::Series::Gpu, "GPU", theme::orange()),
             (power::Series::Cpu, "CPU", theme::accent()),
@@ -4055,6 +4076,7 @@ impl App {
             let Some((min, mean, max)) = self.power.range(series) else {
                 continue;
             };
+            let first = std::mem::replace(&mut first, false);
             ui.horizontal(|ui| {
                 ui.label(RichText::new(name).color(color).size(12.0));
                 ui.label(
@@ -4070,14 +4092,14 @@ impl App {
                     .color(theme::muted())
                     .size(12.0),
                 );
-                if let (power::Series::Gpu, Some(per_tokens)) = (series, &per_tokens) {
+                if let (true, Some(per_tokens)) = (first, &per_tokens) {
                     ui.label(RichText::new(format!("· {per_tokens}")).color(theme::muted()).size(12.0))
                         .on_hover_text(tr(
                             fr,
-                            "Énergie consommée par la carte depuis le démarrage du serveur, pour \
-                             1000 tokens générés.",
-                            "Energy the card used since the server started, per 1000 generated \
-                             tokens.",
+                            "Énergie consommée (carte et processeur) depuis le démarrage du \
+                             serveur, pour 1000 tokens générés.",
+                            "Energy used (card and processor) since the server started, per 1000 \
+                             generated tokens.",
                         ));
                 }
             });

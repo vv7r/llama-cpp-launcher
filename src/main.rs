@@ -5,6 +5,8 @@ mod app;
 mod bench;
 mod cmdparse;
 mod config;
+#[cfg(not(windows))]
+mod desktop;
 mod discovery;
 mod fattn;
 mod gguf;
@@ -23,12 +25,20 @@ mod theme;
 mod updater;
 
 fn main() -> eframe::Result<()> {
+    let viewport = egui::ViewportBuilder::default()
+        .with_title("llama.cpp launcher")
+        .with_inner_size([1440.0, 880.0])
+        .with_min_inner_size([1020.0, 620.0])
+        .with_icon(theme::icon());
+    // Linux : l'icône vient du fichier .desktop qui porte l'app_id de la
+    // fenêtre (Wayland ignore l'icône de la fenêtre).
+    #[cfg(not(windows))]
+    let viewport = {
+        std::thread::spawn(desktop::install);
+        viewport.with_app_id(desktop::APP_ID)
+    };
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("llama.cpp launcher")
-            .with_inner_size([1440.0, 880.0])
-            .with_min_inner_size([1020.0, 620.0])
-            .with_icon(theme::icon()),
+        viewport,
         wgpu_options: eframe::WgpuConfiguration {
             wgpu_setup: eframe::egui_wgpu::WgpuSetup::CreateNew(render_setup()),
             ..Default::default()

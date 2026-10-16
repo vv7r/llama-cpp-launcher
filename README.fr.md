@@ -36,7 +36,10 @@ mkdir -p ~/llama/launcher && tar -xzf llama-cpp-launcher-linux-x86_64.tar.gz -C 
 ```
 
 Le choix d'un dossier passe par la boîte de dialogue du bureau (portail XDG),
-ou par `zenity` s'il n'y a pas de portail.
+ou par `zenity` s'il n'y a pas de portail. Au lancement, l'application
+s'ajoute au menu des applications avec son icône (`~/.local/share/applications`
+et `~/.local/share/icons`) ; ces fichiers sont mis à jour si l'exécutable est
+déplacé.
 
 Au premier démarrage, indiquez :
 
@@ -235,7 +238,8 @@ Les statistiques repartent de zéro à chaque démarrage du serveur, ou avec
 
 **Consommation** — courbes de la puissance de la carte graphique (NVIDIA) et
 du processeur, chacune affichable ou non (cases GPU et CPU), énergie
-consommée par la carte depuis le démarrage du serveur (avec les Wh pour 1000 tokens
+consommée par la carte et le processeur (le survol d'une valeur donne la
+part de chacun) depuis le démarrage du serveur (avec les Wh pour 1000 tokens
 générés) et depuis l'ouverture de l'application, chacune avec sa durée, et en
 cumul conservé d'une session à l'autre, en Wh ou kWh. Le coût se calcule avec
 le prix du kWh indiqué (€, $, £ ou CHF). Dans la courbe, Ctrl + molette zoome
@@ -349,7 +353,8 @@ src/
 ├── gpu.rs         # VRAM, charge et consommation des cartes graphiques
 ├── hub.rs         # téléchargement depuis Hugging Face
 ├── updater.rs     # installation et mise à jour de llama.cpp
-├── icon.rs        # icône (fenêtre et exe, via build.rs)
+├── icon.rs        # icône (fenêtre, exe via build.rs, PNG sous Linux)
+├── desktop.rs     # Linux : entrée du menu des applications et icône
 └── theme.rs       # thèmes et boutons d'action
 ```
 
