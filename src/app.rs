@@ -2117,6 +2117,10 @@ impl App {
                         }
                     }
 
+                    if let Some(s) = &self.sys {
+                        self.ram_gauge(ui, s);
+                    }
+
                     for g in &self.gpus {
                         ui.add_space(10.0);
                         let fraction = g.fraction();
@@ -2178,7 +2182,7 @@ impl App {
                     }
 
                     if let Some(s) = &self.sys {
-                        self.system_gauges(ui, s);
+                        self.cpu_gauges(ui, s);
                     }
 
                     if let Some(pp) = self.speeds.prompt {
@@ -5119,22 +5123,17 @@ impl App {
         }
     }
 
-    /// Jauges de la barre du haut : mémoire vive, charge du processeur et sa
-    /// consommation (si la machine l'expose).
-    fn system_gauges(&self, ui: &mut Ui, s: &SysSample) {
+    /// Jauge de la mémoire vive, première de la barre du haut (RAM, VRAM,
+    /// CPU).
+    fn ram_gauge(&self, ui: &mut Ui, s: &SysSample) {
         let gib = |bytes: u64| bytes as f64 / (1u64 << 30) as f64;
-        let level = |fraction: f32| match fraction {
-            f if f >= 0.9 => theme::red(),
-            f if f >= 0.7 => theme::orange(),
-            _ => theme::green(),
-        };
         ui.add_space(10.0);
         ui.label(RichText::new("RAM").color(theme::muted()).size(11.0));
         let fraction = s.ram_fraction();
         gauge(
             ui,
             fraction,
-            level(fraction),
+            load_color(fraction),
             &format!("{:.1} / {:.1} {}", gib(s.ram_used), gib(s.ram_total), self.t("Go", "GB")),
         )
         .on_hover_text(format!(
@@ -5153,11 +5152,16 @@ impl App {
                  graphics card are loaded there.",
             ),
         ));
+    }
+
+    /// Charge du processeur et sa consommation (si la machine l'expose),
+    /// après la VRAM.
+    fn cpu_gauges(&self, ui: &mut Ui, s: &SysSample) {
         if let Some(cpu) = s.cpu_percent {
-            ui.add_space(6.0);
+            ui.add_space(10.0);
             ui.label(RichText::new("CPU").color(theme::muted()).size(11.0));
             let fraction = (cpu / 100.0).clamp(0.0, 1.0);
-            bar(ui, 64.0, TOP_BAR_ITEM_HEIGHT, fraction, level(fraction), &format!("{cpu:.0} %"))
+            bar(ui, 64.0, TOP_BAR_ITEM_HEIGHT, fraction, load_color(fraction), &format!("{cpu:.0} %"))
                 .on_hover_text(self.t(
                     "Charge du processeur, tous cœurs confondus (comme le Gestionnaire des tâches).",
                     "Processor load, all cores together (as in Task Manager).",
@@ -6551,6 +6555,15 @@ fn display_value(def: &params::ParamDef, value: &str, fr: bool) -> String {
 /// remplissage rectangulaire. (`ProgressBar` d'egui n'a pas de bord, son fond
 /// se confond avec le panneau en thème clair, et ses coins très arrondis
 /// transforment un faible remplissage en pastille.)
+/// Couleur d'une jauge d'occupation : vert, orange à 70 %, rouge à 90 %.
+fn load_color(fraction: f32) -> Color32 {
+    match fraction {
+        f if f >= 0.9 => theme::red(),
+        f if f >= 0.7 => theme::orange(),
+        _ => theme::green(),
+    }
+}
+
 fn gauge(ui: &mut Ui, fraction: f32, fill: Color32, text: &str) -> egui::Response {
     bar(ui, 130.0, TOP_BAR_ITEM_HEIGHT, fraction, fill, text)
 }
