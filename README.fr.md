@@ -53,6 +53,45 @@ Les fichiers `config.json`, `profiles/` et `benchmark.md` sont écrits à côté
 l'exécutable, ou dans le répertoire courant si cet emplacement est en lecture
 seule.
 
+## Compatibilité
+
+**Systèmes**
+
+| | Windows 10 / 11 | Linux (x86_64) | WSL2 (WSLg) |
+|---|---|---|---|
+| Application, llama-server, llama-bench, profils, Hugging Face | ✅ | ✅ | ✅ |
+| Compilation de llama.cpp (CPU, CUDA, Vulkan) | ✅ | ✅ | ✅ |
+| Installer un outil manquant depuis l'app | ✅ `winget`, dans une console | ✅ `apt`, dans un terminal¹ | commande à copier² |
+| Mémoire vive et charge du processeur | ✅ | ✅ | ✅ (celles de la VM) |
+| Consommation du processeur (W) | ✅ RAPL, Intel et AMD³ | root seulement, le plus souvent | ❌ |
+| Icône de l'application | ✅ fenêtre et `.exe` | ✅ entrée de menu, automatique | ✅ après une commande `sudo` |
+
+¹ gnome-terminal, konsole, xfce4-terminal ou xterm. ² WSL n'a pas de fenêtre
+de terminal à lui : copiez la commande dans votre terminal Ubuntu. ³ Windows
+expose les compteurs RAPL sans pilote sur la plupart des processeurs
+récents ; sur une machine qui ne les a pas, rien ne s'affiche.
+
+**Cartes graphiques**
+
+| | NVIDIA | AMD Radeon | Intel Arc | Puce intégrée |
+|---|---|---|---|---|
+| Backend llama.cpp à compiler | CUDA (ou Vulkan) | Vulkan | Vulkan | CPU |
+| VRAM et charge, Windows | ✅ | ✅ | ✅ | masquée |
+| Consommation (W), Windows | ✅ | ❌ (pas d'API Windows) | ❌ (pas d'API Windows) | — |
+| VRAM et charge, Linux | ✅ | ✅ | ❌ | masquée |
+| Consommation (W), Linux | ✅ | ✅ | ✅ | — |
+| ⚠ sur les paires de cache K/V non compilées | ✅ builds CUDA | — | — | — |
+| Carte inexploitée signalée (outil manquant) | CUDA Toolkit | Vulkan SDK | Vulkan SDK | — |
+
+NVIDIA passe par `nvidia-smi`. AMD et Intel passent par les compteurs de
+performance de Windows, ou par les fichiers des pilotes `amdgpu` et Intel
+sous Linux. Une carte de moins d'1 Go de mémoire dédiée est traitée comme
+une puce intégrée et ignorée.
+
+**Testé sur** Windows 11 avec une RTX 5080 et un Ryzen 7 9800X3D, et sur
+Ubuntu dans WSL2. Les chemins AMD et Intel des cartes graphiques ne sont
+testés que sur des données simulées ; vos retours sont les bienvenus.
+
 ## Fonctionnalités
 
 ### Configuration
@@ -350,6 +389,7 @@ src/
 ├── stats.rs       # statistiques par requête (débits, contexte)
 ├── power.rs       # consommation du GPU et du CPU, énergie et coût
 ├── sysmon.rs      # mémoire vive, charge et consommation du processeur
+├── pdh.rs         # compteurs de performance de Windows
 ├── fattn.rs       # paires K/V FlashAttention compilées d'une release
 ├── bench.rs       # llama-bench et benchmark.md
 ├── gpu.rs         # VRAM, charge et consommation des cartes graphiques

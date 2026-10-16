@@ -1,9 +1,9 @@
 [package]
 name = "uillamacpp"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.95"
-description = "Single-file Windows GUI to run, tune and benchmark llama.cpp (llama-server / llama-bench)"
+description = "Single-file Windows and Linux GUI to run, tune and benchmark llama.cpp (llama-server / llama-bench)"
 authors = ["vv7r"]
 repository = "https://github.com/vv7r/llama-cpp-launcher"
 license = "MIT"

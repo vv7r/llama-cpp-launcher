@@ -34,6 +34,7 @@ downloads, live statistics and GPU power tracking.
 ## Contents
 
 - [Features](#features)
+- [Compatibility](#compatibility)
 - [Getting started](#getting-started)
 - [Using the app](#using-the-app)
 - [Where your data lives](#where-your-data-lives)
@@ -128,6 +129,45 @@ downloads, live statistics and GPU power tracking.
 - The UI renders on the integrated GPU when there is one, leaving the whole
   VRAM of the dedicated card to your models.
 
+## Compatibility
+
+**Systems**
+
+| | Windows 10 / 11 | Linux (x86_64) | WSL2 (WSLg) |
+|---|---|---|---|
+| App, llama-server, llama-bench, profiles, Hugging Face | ✅ | ✅ | ✅ |
+| Build llama.cpp (CPU, CUDA, Vulkan) | ✅ | ✅ | ✅ |
+| Install a missing tool from the app | ✅ `winget`, in a console | ✅ `apt`, in a terminal¹ | command to copy² |
+| RAM and processor load | ✅ | ✅ | ✅ (the VM's) |
+| Processor power (W) | ✅ RAPL, Intel and AMD³ | root only, usually | ❌ |
+| App icon | ✅ window and `.exe` | ✅ menu entry, automatic | ✅ after one `sudo` command |
+
+¹ gnome-terminal, konsole, xfce4-terminal or xterm. ² WSL has no terminal
+window of its own: copy the command into your Ubuntu terminal. ³ Windows
+exposes the RAPL counters without a driver on most recent processors; on a
+machine without them, nothing is shown.
+
+**Graphics cards**
+
+| | NVIDIA | AMD Radeon | Intel Arc | Integrated graphics |
+|---|---|---|---|---|
+| llama.cpp backend to build | CUDA (or Vulkan) | Vulkan | Vulkan | CPU |
+| VRAM and load, Windows | ✅ | ✅ | ✅ | hidden |
+| Power (W), Windows | ✅ | ❌ (no Windows API) | ❌ (no Windows API) | — |
+| VRAM and load, Linux | ✅ | ✅ | ❌ | hidden |
+| Power (W), Linux | ✅ | ✅ | ✅ | — |
+| ⚠ on K/V cache pairs not compiled | ✅ CUDA builds | — | — | — |
+| Unused card pointed out (tool missing) | CUDA Toolkit | Vulkan SDK | Vulkan SDK | — |
+
+NVIDIA goes through `nvidia-smi`. AMD and Intel go through the Windows
+performance counters, or the `amdgpu` / Intel driver files on Linux. Cards
+with less than 1 GB of dedicated memory are treated as integrated graphics
+and left out.
+
+**Tested on** Windows 11 with an RTX 5080 and a Ryzen 7 9800X3D, and on
+Ubuntu in WSL2. The AMD and Intel graphics paths are only tested on
+simulated data; reports are welcome.
+
 ## Getting started
 
 ### Requirements
@@ -135,8 +175,8 @@ downloads, live statistics and GPU power tracking.
 - **Windows** 10 or 11, 64-bit, or **Linux** x86_64 with a graphical desktop
   (X11 or Wayland) and glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36
   and later). Also runs in WSL2 on Windows 11, through WSLg.
-- Optional: a graphics card for the VRAM gauge and power tracking (NVIDIA
-  everywhere; AMD and Intel with fewer readings, see above).
+- Optional: a graphics card for the VRAM gauge and power tracking (see
+  [Compatibility](#compatibility)).
 - Only to build llama.cpp from source: Git, CMake, a C++ compiler (Visual Studio
   Build Tools on Windows, `build-essential` on Linux) and, for GPU builds, the
   CUDA Toolkit or the Vulkan SDK. The app tells you what is missing.
@@ -280,6 +320,7 @@ src/
 ├── power.rs       GPU and CPU power curves, energy and cost
 ├── gpu.rs         VRAM, load and power of the graphics cards
 ├── sysmon.rs      RAM, processor load and power
+├── pdh.rs         Windows performance counters
 ├── bench.rs       llama-bench and benchmark.md
 ├── hub.rs         Hugging Face listing and resumable downloads
 ├── updater.rs     llama.cpp install, update and release management
