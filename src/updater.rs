@@ -162,6 +162,9 @@ pub struct Prereqs {
     pub cuda: Option<String>,
     pub vulkan: Option<String>,
     pub nvidia_gpu: Option<String>,
+    /// Cartes graphiques de la machine, toutes marques (registre de Windows,
+    /// `lspci` ou `/sys` sous Linux).
+    pub gpus: Vec<String>,
 }
 
 impl Prereqs {
@@ -175,6 +178,28 @@ impl Prereqs {
             Backend::Cpu => true,
             Backend::Cuda => self.cuda.is_some(),
             Backend::Vulkan => self.vulkan.is_some(),
+        }
+    }
+
+    /// Carte AMD (Radeon) ou Intel Arc, que le backend Vulkan sait exploiter.
+    pub fn vulkan_gpu(&self) -> Option<&str> {
+        self.gpus.iter().map(String::as_str).find(|g| {
+            let l = g.to_ascii_lowercase();
+            l.contains("radeon")
+                || l.contains("amd/ati")
+                || l.starts_with("amd ")
+                || (l.contains("intel") && l.contains("arc"))
+        })
+    }
+
+    /// Outil qui manque pour exploiter la carte de la machine : (clé de
+    /// `install_hint`, nom de la carte). CUDA pour une carte NVIDIA ; Vulkan
+    /// pour une carte AMD ou Intel Arc, s'il n'y a pas de carte NVIDIA.
+    pub fn missing_gpu_tool(&self) -> Option<(&'static str, &str)> {
+        match &self.nvidia_gpu {
+            Some(gpu) => self.cuda.is_none().then_some(("cuda", gpu.as_str())),
+            None if self.vulkan.is_none() => self.vulkan_gpu().map(|gpu| ("vulkan", gpu)),
+            None => None,
         }
     }
 
@@ -285,7 +310,129 @@ pub fn detect_prereqs() -> Prereqs {
         cuda,
         vulkan,
         nvidia_gpu,
+        gpus: list_gpus(),
     }
+}
+
+/// Cartes graphiques déclarées dans le registre (classe « Display ») :
+/// `reg query`, ≈ 20 ms, sans PowerShell ni WMI.
+#[cfg(windows)]
+fn list_gpus() -> Vec<String> {
+    let mut cmd = Command::new("reg");
+    cmd.args([
+        "query",
+        r"HKLM\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}",
+        "/s",
+        "/v",
+        "DriverDesc",
+    ])
+    .creation_flags(CREATE_NO_WINDOW)
+    .stdin(Stdio::null());
+    cmd.output()
+        .map(|out| parse_reg_gpus(&String::from_utf8_lossy(&out.stdout)))
+        .unwrap_or_default()
+}
+
+/// `    DriverDesc    REG_SZ    NVIDIA GeForce RTX 5080` → le nom.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_reg_gpus(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| l.trim_start().starts_with("DriverDesc"))
+        .filter_map(|l| l.split_once("REG_SZ"))
+        .map(|(_, name)| name.trim().to_string())
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// `lspci` (noms complets), sinon les identifiants de fabricant de `/sys`.
+#[cfg(not(windows))]
+fn list_gpus() -> Vec<String> {
+    if find_tool("lspci").is_some() {
+        if let Ok(out) = Command::new("lspci").stdin(Stdio::null()).output() {
+            let found = parse_lspci_gpus(&String::from_utf8_lossy(&out.stdout));
+            if !found.is_empty() {
+                return found;
+            }
+        }
+    }
+    let Ok(cards) = std::fs::read_dir("/sys/class/drm") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for card in cards.flatten() {
+        let vendor = std::fs::read_to_string(card.path().join("device/vendor")).unwrap_or_default();
+        let name = match vendor.trim() {
+            "0x1002" => "AMD GPU",
+            "0x8086" => "Intel GPU",
+            "0x10de" => "NVIDIA GPU",
+            _ => continue,
+        };
+        if !out.iter().any(|n| n == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// `03:00.0 VGA compatible controller: Advanced Micro Devices… [Radeon RX 7900 XT]`
+/// → le texte après le type de contrôleur.
+#[cfg_attr(windows, allow(dead_code))]
+fn parse_lspci_gpus(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| {
+            ["VGA compatible controller: ", "3D controller: ", "Display controller: "]
+                .iter()
+                .find_map(|kind| l.split_once(kind).map(|(_, name)| name.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Lance la commande d'installation d'un prérequis (`install_hint`) dans une
+/// console visible : l'utilisateur y suit la progression, accepte les
+/// licences et la demande de droits administrateur. L'app attend la fin du
+/// processus pour relancer la détection.
+#[cfg(windows)]
+pub fn launch_install(what: &str) -> anyhow::Result<std::process::Child> {
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+    let command = install_hint(what);
+    anyhow::ensure!(!command.is_empty(), "aucune commande d'installation pour {what}");
+    // Sans guillemets autour : cmd prend toute la suite de la ligne, les
+    // guillemets de --override compris, et `&` y enchaîne les commandes.
+    Ok(Command::new("cmd.exe")
+        .raw_arg(format!(
+            "/c title llama.cpp launcher & echo ^> {command} & echo. & {command} & echo. & pause"
+        ))
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()?)
+}
+
+/// Linux : la commande (`sudo apt …`) demande le mot de passe, elle
+/// s'exécute donc dans un terminal. `gnome-terminal --wait` et les autres
+/// rendent la main à la fermeture de la fenêtre.
+#[cfg(not(windows))]
+pub fn launch_install(what: &str) -> anyhow::Result<std::process::Child> {
+    let command = install_hint(what);
+    anyhow::ensure!(!command.is_empty(), "aucune commande d'installation pour {what}");
+    let script = format!(
+        "echo '> {command}'; echo; {command}; echo; printf 'Entrée pour fermer… '; read _"
+    );
+    let terminals: [(&str, &[&str]); 5] = [
+        ("gnome-terminal", &["--wait", "--"]),
+        ("konsole", &["-e"]),
+        ("xfce4-terminal", &["--disable-server", "-x"]),
+        ("xterm", &["-e"]),
+        ("x-terminal-emulator", &["-e"]),
+    ];
+    for (terminal, args) in terminals {
+        if find_tool(terminal).is_some() {
+            return Ok(Command::new(terminal)
+                .args(args)
+                .args(["sh", "-c", &script])
+                .stdin(Stdio::null())
+                .spawn()?);
+        }
+    }
+    anyhow::bail!("aucun terminal trouvé (gnome-terminal, konsole, xfce4-terminal, xterm)")
 }
 
 /// Commande qui installe un prérequis manquant : apt sous Linux (Debian,
@@ -1395,6 +1542,45 @@ CMAKE_GENERATOR_PLATFORM:INTERNAL=
         let args = back.configure_args(Path::new("s"), Path::new("b"));
         assert!(args.contains(&"-DCMAKE_CUDA_ARCHITECTURES=native".to_string()));
         assert_eq!(cpu.with_backend(Backend::Vulkan).backend(), "vulkan");
+    }
+
+    #[test]
+    fn reads_gpu_names() {
+        let reg = "HKEY_LOCAL_MACHINE\\SYSTEM\\…\\0000\r\n    DriverDesc    REG_SZ    NVIDIA GeForce RTX 5080\r\n\r\n\
+                   HKEY_LOCAL_MACHINE\\SYSTEM\\…\\0001\r\n    DriverDesc    REG_SZ    AMD Radeon(TM) Graphics\r\n\r\n\
+                   Fin de la recherche : 2 correspondance(s) trouvée(s).\r\n";
+        assert_eq!(parse_reg_gpus(reg), ["NVIDIA GeForce RTX 5080", "AMD Radeon(TM) Graphics"]);
+        let lspci = "00:02.0 VGA compatible controller: Intel Corporation DG2 [Arc A770] (rev 08)\n\
+                     00:1f.3 Audio device: Intel Corporation Device 7a50\n\
+                     03:00.0 Display controller: Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [Radeon RX 7900 XTX]\n";
+        assert_eq!(
+            parse_lspci_gpus(lspci),
+            [
+                "Intel Corporation DG2 [Arc A770] (rev 08)",
+                "Advanced Micro Devices, Inc. [AMD/ATI] Navi 31 [Radeon RX 7900 XTX]"
+            ]
+        );
+    }
+
+    #[test]
+    fn points_to_the_tool_the_gpu_needs() {
+        let mut p = Prereqs::default();
+        assert_eq!(p.missing_gpu_tool(), None);
+        // Carte AMD seule, sans Vulkan SDK : Vulkan.
+        p.gpus = vec!["Intel(R) UHD Graphics 770".into(), "AMD Radeon RX 7800 XT".into()];
+        assert_eq!(p.missing_gpu_tool(), Some(("vulkan", "AMD Radeon RX 7800 XT")));
+        p.vulkan = Some("1.4".into());
+        assert_eq!(p.missing_gpu_tool(), None);
+        // Une carte NVIDIA passe avant : CUDA, même avec Vulkan installé.
+        p.nvidia_gpu = Some("NVIDIA GeForce RTX 5080".into());
+        assert_eq!(p.missing_gpu_tool(), Some(("cuda", "NVIDIA GeForce RTX 5080")));
+        p.cuda = Some("13.3".into());
+        assert_eq!(p.missing_gpu_tool(), None);
+        // Puce Intel ordinaire : rien à conseiller.
+        let p = Prereqs { gpus: vec!["Intel(R) UHD Graphics 770".into()], ..Default::default() };
+        assert_eq!(p.missing_gpu_tool(), None);
+        let arc = Prereqs { gpus: vec!["Intel(R) Arc(TM) A770 Graphics".into()], ..Default::default() };
+        assert_eq!(arc.missing_gpu_tool(), Some(("vulkan", "Intel(R) Arc(TM) A770 Graphics")));
     }
 
     #[test]

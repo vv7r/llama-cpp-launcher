@@ -134,9 +134,14 @@ Sans llama.cpp installé, l'application s'ouvre sur **Installer llama.cpp** :
   publiées à côté ; environ 2 Go avec CUDA) ;
 - vérification des prérequis — Git, CMake, compilateur C++ (Visual Studio
   Build Tools sous Windows, `build-essential` sous Linux), et selon le backend
-  CUDA Toolkit ou Vulkan SDK. Pour chaque outil manquant, la commande qui
-  l'installe est prête à copier (`winget` sous Windows, `apt` sous Linux) ;
-  **Revérifier** suffit ensuite, sans relancer l'application ;
+  CUDA Toolkit ou Vulkan SDK. Un outil manquant s'installe d'un clic
+  (**Installer**) : sa commande (`winget` sous Windows, `apt` sous Linux)
+  s'exécute dans une fenêtre de terminal, où suivre la progression et accepter
+  les droits administrateur, puis les outils sont détectés de nouveau. La
+  commande reste aussi copiable ;
+- une carte graphique que la compilation ne peut pas encore exploiter est
+  signalée : carte NVIDIA sans CUDA Toolkit, carte AMD ou Intel Arc sans
+  Vulkan SDK ;
 - choix du backend (CUDA, Vulkan ou CPU), le plus adapté à la machine étant
   proposé ;
 - **Télécharger et compiler** : clone de llama.cpp depuis GitHub, compilation,

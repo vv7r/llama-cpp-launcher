@@ -68,8 +68,11 @@ downloads, live statistics and GPU power tracking.
 **Install and update llama.cpp from source**
 - No llama.cpp yet? The app clones and builds it for your machine (CUDA,
   Vulkan or CPU), checking prerequisites (Git, CMake, a C++ compiler, CUDA
-  Toolkit / Vulkan SDK) and showing the command that installs any missing tool
-  (`winget` on Windows, `apt` on Linux).
+  Toolkit / Vulkan SDK). A missing tool installs in one click: its command
+  (`winget` on Windows, `apt` on Linux) runs in a terminal window, then the
+  tools are detected again. A graphics card the build cannot use yet is
+  pointed out (NVIDIA without the CUDA Toolkit, AMD or Intel Arc without the
+  Vulkan SDK).
 - Updates build incrementally and publish a **new release folder** each time
   (`llama-b11235-cuda`): a running server is never overwritten, and older
   versions stay available for comparison. Deleting one is an explicit choice.

@@ -75,6 +75,8 @@ enum Action {
     StartInstall,
     RecheckPrereqs,
     CopyText(String),
+    /// Lance la commande d'installation d'un prérequis (clé d'`install_hint`).
+    InstallTool(&'static str),
     AskDeleteVersion(PathBuf),
     SetTheme(ThemeChoice),
     HubLoad,
@@ -224,6 +226,9 @@ pub struct App {
     install_backend: updater::Backend,
     /// L'utilisateur a choisi le backend : ne plus appliquer la suggestion.
     install_backend_chosen: bool,
+    /// Installation d'un prérequis en cours dans sa console : (clé, processus).
+    /// Les outils sont détectés de nouveau à sa fermeture.
+    tool_install: Option<(&'static str, std::process::Child)>,
     /// Résultats de `llama-server --version`, par dossier (None = échec).
     probed: HashMap<PathBuf, Option<(u32, String)>>,
     probe_rx: Option<Receiver<ProbeResult>>,
@@ -336,6 +341,7 @@ impl App {
                 .unwrap_or_default(),
             install_backend: updater::Backend::Cpu,
             install_backend_chosen: false,
+            tool_install: None,
             cfg,
         };
         app.refresh();
@@ -1196,6 +1202,20 @@ impl App {
                 ctx.copy_text(text);
                 self.notify(self.t("Commande copiée.", "Command copied."), theme::accent());
             }
+            Action::InstallTool(key) => {
+                if self.tool_install.is_none() {
+                    match updater::launch_install(key) {
+                        Ok(child) => {
+                            self.log(format!("> {}", updater::install_hint(key)));
+                            self.tool_install = Some((key, child));
+                        }
+                        Err(e) => {
+                            self.log(format!("! {e}"));
+                            self.notify(e.to_string(), theme::red());
+                        }
+                    }
+                }
+            }
             Action::BrowseSource => {
                 if let Some(dir) = pick_folder(&self.cfg.llama_source_directory) {
                     if updater::is_source(&dir) {
@@ -1712,6 +1732,16 @@ impl App {
     }
 
     fn pump_update(&mut self, ctx: &egui::Context) {
+        // Console d'installation fermée : l'outil est peut-être là.
+        if let Some((_, child)) = &mut self.tool_install {
+            match child.try_wait() {
+                Ok(None) => ctx.request_repaint_after(Duration::from_secs(1)),
+                _ => {
+                    self.tool_install = None;
+                    self.start_prereqs();
+                }
+            }
+        }
         if let Some(rx) = &self.prereq_rx {
             match rx.try_recv() {
                 Ok(found) => {
@@ -4917,6 +4947,7 @@ impl App {
                                 }
                             });
                         self.update_backend = chosen;
+                        self.gpu_tool_hint(ui, actions, fr);
                         if chosen.is_some() {
                             hint(
                                 ui,
@@ -5000,6 +5031,93 @@ impl App {
         if !open {
             self.update_open = false;
         }
+    }
+
+    /// « Installer » (console visible) et « Copier la commande » pour un
+    /// prérequis manquant.
+    fn install_buttons(&self, ui: &mut Ui, actions: &mut Vec<Action>, key: &'static str, fr: bool) {
+        let command = updater::install_hint(key);
+        match &self.tool_install {
+            Some((running, _)) if *running == key => {
+                ui.add(egui::Spinner::new().size(12.0));
+                ui.label(
+                    RichText::new(tr(fr, "installation en cours…", "installing…"))
+                        .color(theme::muted())
+                        .size(11.5),
+                )
+                .on_hover_text(tr(
+                    fr,
+                    "Suivez-la dans sa fenêtre. Les outils sont détectés de nouveau à sa \
+                     fermeture.",
+                    "Follow it in its window. The tools are detected again when it closes.",
+                ));
+            }
+            other => {
+                if ui
+                    .add_enabled(other.is_none(), egui::Button::new(tr(fr, "Installer", "Install")).small())
+                    .on_hover_text(format!(
+                        "{}\n\n{command}",
+                        tr(
+                            fr,
+                            "Lance cette commande dans une fenêtre de terminal, où suivre la \
+                             progression et accepter la demande de droits administrateur.",
+                            "Runs this command in a terminal window, where you follow the \
+                             progress and accept the administrator prompt.",
+                        )
+                    ))
+                    .on_disabled_hover_text(tr(
+                        fr,
+                        "Une autre installation est en cours.",
+                        "Another install is running.",
+                    ))
+                    .clicked()
+                {
+                    actions.push(Action::InstallTool(key));
+                }
+            }
+        }
+        if ui
+            .small_button(tr(fr, "Copier la commande", "Copy command"))
+            .on_hover_text(command)
+            .clicked()
+        {
+            actions.push(Action::CopyText(command.to_string()));
+        }
+    }
+
+    /// Carte graphique présente mais inexploitable faute d'outil : le dire,
+    /// avec de quoi l'installer (CUDA pour NVIDIA, Vulkan pour AMD et Intel
+    /// Arc).
+    fn gpu_tool_hint(&self, ui: &mut Ui, actions: &mut Vec<Action>, fr: bool) {
+        let Some((key, gpu)) = self.prereqs.as_ref().and_then(|p| p.missing_gpu_tool()) else {
+            return;
+        };
+        let text = match key {
+            "cuda" => format!(
+                "{} ({gpu}){}{}",
+                tr(fr, "Carte NVIDIA détectée", "NVIDIA card detected"),
+                tr(fr, " : ", ": "),
+                tr(
+                    fr,
+                    "installez le CUDA Toolkit pour compiler le backend CUDA, bien plus rapide \
+                     que le CPU sur cette carte.",
+                    "install the CUDA Toolkit to build the CUDA backend, much faster than the \
+                     CPU on this card.",
+                )
+            ),
+            _ => format!(
+                "{} ({gpu}){}{}",
+                tr(fr, "Carte détectée", "Card detected"),
+                tr(fr, " : ", ": "),
+                tr(
+                    fr,
+                    "installez le Vulkan SDK pour compiler le backend Vulkan, qui l'exploite.",
+                    "install the Vulkan SDK to build the Vulkan backend, which uses it.",
+                )
+            ),
+        };
+        ui.label(RichText::new(text).color(theme::orange()).size(11.5));
+        ui.horizontal(|ui| self.install_buttons(ui, actions, key, fr));
     }
 
     /// Étape, progression, durée et annulation d'une installation ou mise à
@@ -5190,13 +5308,8 @@ impl App {
                                     .color(if required { theme::red() } else { theme::muted() })
                                     .size(11.5),
                                 );
-                                if !command.is_empty()
-                                    && ui
-                                        .small_button(tr(fr, "Copier la commande", "Copy command"))
-                                        .on_hover_text(command)
-                                        .clicked()
-                                {
-                                    actions.push(Action::CopyText(command.to_string()));
+                                if !command.is_empty() {
+                                    self.install_buttons(ui, actions, key, fr);
                                 }
                             });
                         }
@@ -5253,6 +5366,7 @@ impl App {
             self.install_backend = chosen;
             self.install_backend_chosen = true;
         }
+        self.gpu_tool_hint(ui, actions, fr);
         if self.install_backend == updater::Backend::Cuda {
             hint(
                 ui,
