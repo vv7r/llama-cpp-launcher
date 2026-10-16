@@ -138,6 +138,7 @@ pub fn probe_version(server: &Path) -> Option<(u32, String)> {
         return None;
     }
     let mut cmd = Command::new(server);
+    use_own_libraries(&mut cmd, server);
     cmd.arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -174,17 +175,38 @@ pub fn probe_version(server: &Path) -> Option<(u32, String)> {
     parse_version(&text)
 }
 
-/// Vrai exécutable Windows (en-têtes MZ puis PE) ? Sur les autres systèmes,
-/// simple test d'existence.
+/// Vrai exécutable ? Windows : en-têtes MZ puis PE. Ailleurs : en-tête ELF
+/// et droit d'exécution.
 ///
 /// Lancer un fichier `.exe` corrompu ou tronqué fait afficher par Windows une
 /// boîte de dialogue modale au lieu de renvoyer une erreur : on vérifie
-/// l'en-tête avant de lancer quoi que ce soit.
+/// l'en-tête avant de lancer quoi que ce soit. Sous Linux, l'échec serait
+/// seulement une erreur, mais le message est plus clair vérifié d'avance.
+/// Prépare le lancement d'un programme de llama.cpp : ses bibliothèques
+/// (`libllama.so`, `libggml-*.so`) sont cherchées d'abord dans son dossier.
+///
+/// Sous Linux, un binaire compilé par CMake retient le chemin absolu de son
+/// dossier de compilation : une release copiée ailleurs chargerait les
+/// bibliothèques de la dernière compilation, pas les siennes. Sous Windows,
+/// le dossier de l'exe est déjà cherché en premier : rien à faire.
+pub fn use_own_libraries(cmd: &mut std::process::Command, exe: &Path) {
+    #[cfg(not(windows))]
+    if let Some(dir) = exe.parent() {
+        let mut paths = vec![dir.to_path_buf()];
+        if let Some(old) = std::env::var_os("LD_LIBRARY_PATH") {
+            paths.extend(std::env::split_paths(&old));
+        }
+        if let Ok(joined) = std::env::join_paths(paths) {
+            cmd.env("LD_LIBRARY_PATH", joined);
+        }
+    }
+    #[cfg(windows)]
+    let _ = (cmd, exe);
+}
+
+#[cfg(windows)]
 pub fn is_executable(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
-    if !cfg!(windows) {
-        return path.is_file();
-    }
     let Ok(mut f) = std::fs::File::open(path) else {
         return false;
     };
@@ -197,6 +219,20 @@ pub fn is_executable(path: &Path) -> bool {
     f.seek(SeekFrom::Start(pe_offset)).is_ok()
         && f.read_exact(&mut sig).is_ok()
         && &sig == b"PE\0\0"
+}
+
+#[cfg(not(windows))]
+pub fn is_executable(path: &Path) -> bool {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let runnable = f
+        .metadata()
+        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0);
+    let mut magic = [0u8; 4];
+    runnable && f.read_exact(&mut magic).is_ok() && &magic == b"\x7fELF"
 }
 
 pub fn parse_version(text: &str) -> Option<(u32, String)> {

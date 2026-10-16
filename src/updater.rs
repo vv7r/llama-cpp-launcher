@@ -51,6 +51,34 @@ pub fn find_tool(exe: &str) -> Option<PathBuf> {
     from_path.or_else(|| known_locations(exe).into_iter().find(|p| p.is_file()))
 }
 
+/// Linux : les outils s'installent dans le PATH (paquets), sauf le CUDA
+/// Toolkit de NVIDIA, souvent laissé dans `/usr/local/cuda*`.
+#[cfg(not(windows))]
+fn known_locations(exe: &str) -> Vec<PathBuf> {
+    if exe != "nvcc" {
+        return Vec::new();
+    }
+    let mut out: Vec<PathBuf> = ["CUDA_PATH", "CUDA_HOME"]
+        .iter()
+        .filter_map(|v| std::env::var(v).ok())
+        .map(|p| PathBuf::from(p).join("bin/nvcc"))
+        .collect();
+    out.push(PathBuf::from("/usr/local/cuda/bin/nvcc"));
+    // Toolkit versionné le plus récent (/usr/local/cuda-13.3…).
+    if let Ok(rd) = std::fs::read_dir("/usr/local") {
+        let mut dirs: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("cuda-")))
+            .collect();
+        dirs.sort();
+        out.extend(dirs.into_iter().rev().map(|d| d.join("bin/nvcc")));
+    }
+    out.push(PathBuf::from("/opt/cuda/bin/nvcc"));
+    out
+}
+
+#[cfg(windows)]
 fn known_locations(exe: &str) -> Vec<PathBuf> {
     let pf = PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()));
     match exe {
@@ -181,7 +209,13 @@ pub fn detect_prereqs() -> Prereqs {
         })
         .flatten()
     } else {
-        Some("compilateur système".to_string())
+        // `c++ --version` : « c++ (Ubuntu 15.2.0-4ubuntu4) 15.2.0 ».
+        ["c++", "g++", "clang++"].iter().find_map(|cc| {
+            find_tool(cc)?;
+            let mut cmd = tool(cc);
+            cmd.arg("--version");
+            first_line(cmd)
+        })
     };
 
     let cuda = find_tool(NVCC).and_then(|nvcc| {
@@ -207,14 +241,26 @@ pub fn detect_prereqs() -> Prereqs {
         dirs.sort();
         dirs.pop()
     });
-    let vulkan = vulkan_root.and_then(|sdk| {
-        let glslc = if cfg!(windows) { r"Bin\glslc.exe" } else { "bin/glslc" };
-        sdk.join(glslc).is_file().then(|| {
-            sdk.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "SDK".into())
+    let vulkan = vulkan_root
+        .and_then(|sdk| {
+            let glslc = if cfg!(windows) { r"Bin\glslc.exe" } else { "bin/glslc" };
+            sdk.join(glslc).is_file().then(|| {
+                sdk.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "SDK".into())
+            })
         })
-    });
+        // Linux : pas de SDK, mais les paquets du système (glslc et les
+        // en-têtes Vulkan) suffisent à llama.cpp.
+        .or_else(|| {
+            if cfg!(windows) {
+                return None;
+            }
+            find_tool("glslc")?;
+            let mut cmd = tool("glslc");
+            cmd.arg("--version");
+            first_line(cmd)
+        });
 
     let nvidia_gpu = {
         let mut cmd = Command::new("nvidia-smi");
@@ -232,7 +278,22 @@ pub fn detect_prereqs() -> Prereqs {
     }
 }
 
+/// Commande qui installe un prérequis manquant : apt sous Linux (Debian,
+/// Ubuntu), winget sous Windows.
+#[cfg(not(windows))]
+pub fn install_hint(what: &str) -> &'static str {
+    match what {
+        "git" => "sudo apt install git",
+        "cmake" => "sudo apt install cmake",
+        "msvc" => "sudo apt install build-essential",
+        "cuda" => "sudo apt install nvidia-cuda-toolkit",
+        "vulkan" => "sudo apt install libvulkan-dev glslc",
+        _ => "",
+    }
+}
+
 /// Commande winget qui installe un prérequis manquant.
+#[cfg(windows)]
 pub fn install_hint(what: &str) -> &'static str {
     match what {
         "git" => "winget install --id Git.Git -e",
@@ -462,6 +523,12 @@ impl BuildConfig {
             } else {
                 args.push(format!("-D{name}:{kind}={value}"));
             }
+        }
+        // Linux : chemins des bibliothèques relatifs à l'exe ($ORIGIN), pour
+        // qu'une release copiée hors du dossier de compilation charge ses
+        // propres bibliothèques.
+        if !cfg!(windows) {
+            args.push("-DCMAKE_BUILD_RPATH_USE_ORIGIN:BOOL=ON".to_string());
         }
         args
     }
@@ -943,17 +1010,38 @@ fn copy_binaries(from: &Path, target: &Path) -> anyhow::Result<usize> {
     let mut count = 0;
     for entry in std::fs::read_dir(from)?.flatten() {
         let path = entry.path();
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(str::to_lowercase);
-        if path.is_file() && matches!(ext.as_deref(), Some("exe" | "dll")) {
-            std::fs::copy(&path, tmp.join(entry.file_name()))?;
-            count += 1;
+        if !(path.is_file() && is_binary(&path)) {
+            continue;
         }
+        let dest = tmp.join(entry.file_name());
+        // Linux : `libggml.so -> libggml.so.0 -> libggml.so.0.27.0`. Les liens
+        // sont recréés, pas suivis : copiés, ils triplaient chaque
+        // bibliothèque (plusieurs centaines de Mo avec CUDA).
+        #[cfg(unix)]
+        if entry.file_type().is_ok_and(|t| t.is_symlink()) {
+            std::os::unix::fs::symlink(std::fs::read_link(&path)?, &dest)?;
+            count += 1;
+            continue;
+        }
+        std::fs::copy(&path, dest)?;
+        count += 1;
     }
     std::fs::rename(&tmp, target)?;
     Ok(count)
+}
+
+/// Fichier d'une release : exe et DLL sous Windows ; sous Linux, les
+/// exécutables (sans extension) et les bibliothèques partagées
+/// (`libllama.so`, `libggml-cuda.so.0`…).
+fn is_binary(path: &Path) -> bool {
+    let name = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if cfg!(windows) {
+        name.ends_with(".exe") || name.ends_with(".dll")
+    } else {
+        name.ends_with(".so")
+            || name.contains(".so.")
+            || (path.extension().is_none() && crate::discovery::is_executable(path))
+    }
 }
 
 /// Nombre de projets MSBuild à compiler, pour mesurer l'avancement.
@@ -991,6 +1079,11 @@ fn build_progress(line: &str, done: &mut usize, total: usize) -> Option<f32> {
     let t = line.trim_start();
     if let Some(rest) = t.strip_prefix('[') {
         let (counts, _) = rest.split_once(']')?;
+        // Makefiles (Linux) : « [ 45%] Building CXX object … ».
+        if let Some(pct) = counts.trim().strip_suffix('%') {
+            let pct: f32 = pct.trim().parse().ok()?;
+            return Some((pct / 100.0).clamp(0.0, 1.0));
+        }
         let (a, b) = counts.split_once('/')?;
         let (a, b): (f32, f32) = (a.trim().parse().ok()?, b.trim().parse().ok()?);
         return (b > 0.0).then(|| (a / b).clamp(0.0, 1.0));
@@ -1238,6 +1331,9 @@ CMAKE_GENERATOR_PLATFORM:INTERNAL=
     fn progress_from_ninja_and_msbuild() {
         let mut done = 0;
         assert_eq!(build_progress("[50/200] Building CXX object", &mut done, 0), Some(0.25));
+        // Makefiles (Linux).
+        assert_eq!(build_progress("[ 45%] Building CXX object x.o", &mut done, 0), Some(0.45));
+        assert_eq!(build_progress("[100%] Built target llama-server", &mut done, 0), Some(1.0));
         assert_eq!(
             build_progress("  ggml-cuda.vcxproj -> C:\\b\\ggml-cuda.dll", &mut done, 4),
             Some(0.25)
@@ -1252,18 +1348,39 @@ CMAKE_GENERATOR_PLATFORM:INTERNAL=
         let bin = root.join("bin");
         let releases = root.join("releases");
         std::fs::create_dir_all(&bin).unwrap();
-        for f in ["llama-server.exe", "ggml-cuda.dll", "notes.txt"] {
-            std::fs::write(bin.join(f), b"x").unwrap();
+        // Un exécutable, une bibliothèque du backend, un fichier étranger.
+        #[cfg(windows)]
+        let (exe, lib) = ("llama-server.exe", "ggml-cuda.dll");
+        #[cfg(not(windows))]
+        let (exe, lib) = ("llama-server", "libggml-cuda.so.0");
+        std::fs::write(bin.join(exe), b"\x7fELF").unwrap();
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join(exe), std::fs::Permissions::from_mode(0o755)).unwrap();
         }
+        std::fs::write(bin.join(lib), b"x").unwrap();
+        std::fs::write(bin.join("notes.txt"), b"x").unwrap();
         std::fs::create_dir_all(releases.join("llama-b1-cuda")).unwrap();
 
         // Le nom est pris : suffixe, sans toucher à la release existante.
         let name = unique_name(&releases, "llama-b1-cuda");
         assert_eq!(name, "llama-b1-cuda-2");
         let copied = copy_binaries(&bin, &releases.join(&name)).unwrap();
-        assert_eq!(copied, 2, "seuls les exe et dll sont copiés");
-        assert!(releases.join(&name).join("ggml-cuda.dll").is_file());
+        assert_eq!(copied, 2, "seuls l'exécutable et la bibliothèque sont copiés");
+        assert!(releases.join(&name).join(exe).is_file());
+        assert!(releases.join(&name).join(lib).is_file());
         assert!(!releases.join(&name).join("notes.txt").exists());
+        // Linux : un lien vers une bibliothèque reste un lien.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(lib, bin.join("libggml-cuda.so")).unwrap();
+            let again = unique_name(&releases, "llama-b1-cuda");
+            assert_eq!(copy_binaries(&bin, &releases.join(&again)).unwrap(), 3);
+            let link = releases.join(&again).join("libggml-cuda.so");
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert_eq!(std::fs::read_link(&link).unwrap(), std::path::Path::new(lib));
+        }
         // Aucun dossier temporaire ne reste.
         let leftovers: Vec<_> = std::fs::read_dir(&releases)
             .unwrap()

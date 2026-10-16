@@ -260,6 +260,7 @@ fn run_one(
     anyhow::ensure!(exe.is_file(), "{} introuvable", exe.display());
 
     let mut cmd = Command::new(&exe);
+    crate::discovery::use_own_libraries(&mut cmd, &exe);
     cmd.arg("-m")
         .arg(&model.full_path)
         .args(settings.args())

@@ -16,9 +16,17 @@ serde_json = "1.0.151"
 rfd = "0.17.2"
 chrono = "0.4.45"
 anyhow = "1.0.104"
-ureq = { version = "3", default-features = false, features = ["native-tls", "gzip"] }
 egui_plot = "0.37"
 egui_extras = { version = "0.36.1", default-features = false }
+
+# HTTPS : le TLS de Windows (certificats du système, proxy d'entreprise) ;
+# sous Linux, rustls, en pur Rust, pour n'exiger aucune bibliothèque TLS
+# installée. Dans les deux cas, le magasin de certificats du système.
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "3", default-features = false, features = ["native-tls", "gzip"] }
+
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "gzip"] }
 
 [profile.release]
 opt-level = 3

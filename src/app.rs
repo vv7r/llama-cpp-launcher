@@ -327,7 +327,7 @@ impl App {
             confirm_version_delete: None,
             prereqs: None,
             prereq_rx: None,
-            install_dir: std::env::var("USERPROFILE")
+            install_dir: std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
                 .map(|home| PathBuf::from(home).join("llama").to_string_lossy().into_owned())
                 .unwrap_or_default(),
             install_backend: updater::Backend::Cpu,
@@ -2792,11 +2792,13 @@ impl App {
                     )
                     .on_hover_text(self.t(
                         "Exactement ce qui sera exécuté au démarrage. Une option par ligne, \
-                         avec les continuations ^ de cmd.exe : la commande est collable telle \
-                         quelle dans un terminal. Le bord supérieur du panneau se redimensionne.",
+                         avec les continuations de ligne du terminal (^ pour cmd.exe, \\ sous \
+                         Linux) : la commande est collable telle quelle dans un terminal. Le \
+                         bord supérieur du panneau se redimensionne.",
                         "Exactly what will be executed on start. One option per line, with \
-                         cmd.exe ^ continuations: the command can be pasted straight into a \
-                         terminal. Drag the panel's top edge to resize it.",
+                         the terminal's line continuations (^ for cmd.exe, \\ on Linux): the \
+                         command can be pasted straight into a terminal. Drag the panel's top \
+                         edge to resize it.",
                     ));
                     ui.label(
                         RichText::new(format!(
@@ -4955,8 +4957,8 @@ impl App {
             );
             // Windows limite un chemin à 260 caractères ; les fichiers
             // intermédiaires de compilation s'enfoncent de ~150 caractères
-            // sous le dossier.
-            if root.join("llama.cpp").to_string_lossy().len() > 80 {
+            // sous le dossier. Linux n'a pas cette limite.
+            if cfg!(windows) && root.join("llama.cpp").to_string_lossy().len() > 80 {
                 ui.label(
                     RichText::new(tr(
                         fr,
@@ -4980,10 +4982,11 @@ impl App {
                 tr(
                     fr,
                     "Outils nécessaires à la compilation. Pour un outil manquant, la commande \
-                     winget indiquée l'installe ; cliquez ensuite sur « Revérifier », sans \
-                     relancer l'application.",
-                    "Tools needed to build. For a missing tool, the winget command shown \
-                     installs it; then click “Check again”, without restarting the app.",
+                     indiquée l'installe (winget sous Windows, apt sous Linux) ; cliquez \
+                     ensuite sur « Revérifier », sans relancer l'application.",
+                    "Tools needed to build. For a missing tool, the command shown installs it \
+                     (winget on Windows, apt on Linux); then click “Check again”, without \
+                     restarting the app.",
                 ),
             );
             if self.prereq_rx.is_some() {
@@ -5003,7 +5006,16 @@ impl App {
         let rows: [(&str, &str, &Option<String>, bool); 6] = [
             ("git", "Git", &p.git, true),
             ("cmake", "CMake", &p.cmake, true),
-            ("msvc", tr(fr, "Compilateur C++ (Build Tools)", "C++ compiler (Build Tools)"), &p.msvc, true),
+            (
+                "msvc",
+                if cfg!(windows) {
+                    tr(fr, "Compilateur C++ (Build Tools)", "C++ compiler (Build Tools)")
+                } else {
+                    tr(fr, "Compilateur C++", "C++ compiler")
+                },
+                &p.msvc,
+                true,
+            ),
             ("gpu", tr(fr, "GPU NVIDIA", "NVIDIA GPU"), &p.nvidia_gpu, false),
             ("cuda", "CUDA Toolkit", &p.cuda, false),
             ("vulkan", "Vulkan SDK", &p.vulkan, false),

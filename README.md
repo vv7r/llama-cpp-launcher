@@ -1,9 +1,9 @@
 # llama.cpp launcher
 
-**A single-file Windows app to run, tune and benchmark [llama.cpp](https://github.com/ggml-org/llama.cpp) — without ever typing a command-line flag.**
+**A single-file app for Windows and Linux to run, tune and benchmark [llama.cpp](https://github.com/ggml-org/llama.cpp) — without ever typing a command-line flag.**
 
 [![Release](https://img.shields.io/github/v/release/vv7r/llama-cpp-launcher)](https://github.com/vv7r/llama-cpp-launcher/releases/latest)
-![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D4)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20x64-0078D4)
 ![Runtime](https://img.shields.io/badge/runtime-none-2EA043)
 ![Rust](https://img.shields.io/badge/built%20with-Rust%20%2B%20egui-B7410E)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -22,8 +22,10 @@ starting. This launcher puts every option behind a **closed list of valid
 values**: you pick, you never type. "Disabled" simply removes the option from
 the command line.
 
-It also ships as **one `.exe` with no runtime**: no .NET, no WebView, no Visual
-C++ redistributable (the CRT is linked statically). Download it, run it.
+It also ships as **one executable with no runtime**: on Windows a single `.exe`
+with no .NET, WebView or Visual C++ redistributable (the CRT is linked
+statically); on Linux a single binary that only needs the C library. Download
+it, run it.
 
 It is a Rust rewrite of [llamapilot](https://github.com/Hamrounmh/llamapilot)
 (WPF / .NET 8), extended with llama.cpp installation and updates, Hugging Face
@@ -65,9 +67,9 @@ downloads, live statistics and GPU power tracking.
 
 **Install and update llama.cpp from source**
 - No llama.cpp yet? The app clones and builds it for your machine (CUDA,
-  Vulkan or CPU), checking prerequisites (Git, CMake, Visual Studio Build
-  Tools, CUDA Toolkit / Vulkan SDK) and showing the `winget` command for any
-  missing tool.
+  Vulkan or CPU), checking prerequisites (Git, CMake, a C++ compiler, CUDA
+  Toolkit / Vulkan SDK) and showing the command that installs any missing tool
+  (`winget` on Windows, `apt` on Linux).
 - Updates build incrementally and publish a **new release folder** each time
   (`llama-b11235-cuda`): a running server is never overwritten, and older
   versions stay available for comparison. Deleting one is an explicit choice.
@@ -104,7 +106,7 @@ downloads, live statistics and GPU power tracking.
 **Everything else**
 - VRAM gauge and GPU power in the top bar (NVIDIA, via `nvidia-smi`).
 - Six themes: Dark, Light, Nord, Dracula, Gruvbox, Solarized Light.
-- English and French; follows the Windows language on first launch.
+- English and French; follows the system language on first launch.
 - The UI renders on the integrated GPU when there is one, leaving the whole
   VRAM of the dedicated card to your models.
 
@@ -112,13 +114,17 @@ downloads, live statistics and GPU power tracking.
 
 ### Requirements
 
-- Windows 10 or 11, 64-bit.
+- **Windows** 10 or 11, 64-bit, or **Linux** x86_64 with a graphical desktop
+  (X11 or Wayland) and glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36
+  and later). Also runs in WSL2 on Windows 11, through WSLg.
 - Optional: an NVIDIA GPU for the VRAM gauge and power tracking.
-- Only to build llama.cpp from source: Git, CMake, Visual Studio Build Tools and,
-  for GPU builds, the CUDA Toolkit or the Vulkan SDK. The app tells you what is
-  missing.
+- Only to build llama.cpp from source: Git, CMake, a C++ compiler (Visual Studio
+  Build Tools on Windows, `build-essential` on Linux) and, for GPU builds, the
+  CUDA Toolkit or the Vulkan SDK. The app tells you what is missing.
 
 ### Install
+
+**Windows**
 
 1. Download **`llama-cpp-launcher.exe`** from the
    [latest release](https://github.com/vv7r/llama-cpp-launcher/releases/latest).
@@ -127,14 +133,29 @@ downloads, live statistics and GPU power tracking.
 3. Run it. The executable is not code-signed, so Windows SmartScreen may warn
    you the first time: click *More info* → *Run anyway*.
 
+**Linux**
+
+1. Download **`llama-cpp-launcher-linux-x86_64.tar.gz`** from the
+   [latest release](https://github.com/vv7r/llama-cpp-launcher/releases/latest).
+2. Extract it in a folder of its own (it stores its settings next to itself):
+
+   ```bash
+   mkdir -p ~/llama/launcher && tar -xzf llama-cpp-launcher-linux-x86_64.tar.gz -C ~/llama/launcher
+   ~/llama/launcher/llama-cpp-launcher
+   ```
+
+The folder picker uses your desktop's file dialog (XDG portal), or `zenity`
+when no portal is available.
+
 ### First launch
 
 - **You already have llama.cpp**: pick the **llama.cpp directory** — the folder
-  that contains your builds, each subfolder holding a `llama-server.exe`
+  that contains your builds, each subfolder holding a `llama-server` executable
   (`bin/` and `build/bin/` are found too).
-- **You don't**: the app opens on **Install llama.cpp**. Choose a short folder
-  such as `C:\llama` (Windows limits path length and the build goes deep),
-  a backend, then **Download and build**. A CUDA build takes 20 to 60 minutes.
+- **You don't**: the app opens on **Install llama.cpp**. Choose a folder (on
+  Windows a short one such as `C:\llama`: Windows limits path length and the
+  build goes deep), a backend, then **Download and build**. A CPU build takes a
+  few minutes, a CUDA build 20 to 60 minutes.
 
 Then pick your **models directory** (scanned recursively for `.gguf` files),
 or download a model from the **Models** tab.
@@ -175,30 +196,41 @@ instead of being overwritten.
 
 ## Building from source
 
-Requires [Rust](https://rustup.rs) 1.95 or newer with the MSVC toolchain
-(Visual Studio Build Tools).
+Requires [Rust](https://rustup.rs) 1.95 or newer: on Windows with the MSVC
+toolchain (Visual Studio Build Tools), on Linux with a C compiler
+(`build-essential`).
 
 ```bash
 git clone https://github.com/vv7r/llama-cpp-launcher.git
 cd llama-cpp-launcher
 cargo test
 cargo build --release
-# -> target/release/uillamacpp.exe
+# -> target/release/uillamacpp(.exe)
 ```
 
 To build the executable that gets published, use the release script instead:
 
 ```powershell
+# Windows
 powershell -ExecutionPolicy Bypass -File scripts\build-release.ps1
 # -> dist\llama-cpp-launcher.exe
 ```
 
-It strips local paths from the binary (Rust embeds the source path of every
+```bash
+# Linux
+scripts/build-release.sh
+# -> dist/llama-cpp-launcher-linux-x86_64.tar.gz
+```
+
+Each script strips local paths from the binary (Rust embeds the source path of every
 dependency, e.g. `C:\Users\<you>\.cargo\registry\…`) with
 `--remap-path-prefix`, then checks that none is left.
 
-`.cargo/config.toml` links the C runtime statically, and `build.rs` embeds the
-icon (drawn by `src/icon.rs`) into the executable.
+On Windows, `.cargo/config.toml` links the C runtime statically, and `build.rs`
+embeds the icon (drawn by `src/icon.rs`) into the executable. The
+[release workflow](.github/workflows/release.yml) builds and publishes both
+executables for every `v*` tag; the Linux one is built on Ubuntu 22.04 so that
+it runs on older distributions too.
 
 After updating llama.cpp, check that the option catalog still matches what
 `llama-server` accepts:
@@ -228,7 +260,7 @@ src/
 ├── hub.rs         Hugging Face listing and resumable downloads
 ├── updater.rs     llama.cpp install, update and release management
 ├── fattn.rs       FlashAttention K/V pairs compiled in a CUDA build
-├── icon.rs        application icon (window and .exe)
+├── icon.rs        application icon (window, and .exe on Windows)
 └── theme.rs       themes and colored action buttons
 ```
 

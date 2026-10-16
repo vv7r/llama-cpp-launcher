@@ -120,6 +120,7 @@ pub fn start(
     let command_line = format!("{} {}", server_exe.display(), args.join(" "));
 
     let mut cmd = Command::new(server_exe);
+    crate::discovery::use_own_libraries(&mut cmd, server_exe);
     cmd.args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

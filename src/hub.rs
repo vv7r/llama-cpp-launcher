@@ -124,8 +124,14 @@ struct Sibling {
 }
 
 fn tls() -> ureq::tls::TlsConfig {
+    // Windows : le TLS du système. Linux : rustls (aucune bibliothèque TLS à
+    // installer). Les certificats viennent du système dans les deux cas.
+    #[cfg(windows)]
+    let provider = ureq::tls::TlsProvider::NativeTls;
+    #[cfg(not(windows))]
+    let provider = ureq::tls::TlsProvider::Rustls;
     ureq::tls::TlsConfig::builder()
-        .provider(ureq::tls::TlsProvider::NativeTls)
+        .provider(provider)
         .root_certs(ureq::tls::RootCerts::PlatformVerifier)
         .build()
 }

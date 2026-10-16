@@ -723,11 +723,15 @@ pub struct Command<'a> {
     pub extra: &'a [Vec<String>],
 }
 
+/// Continuation de ligne du terminal du système : `^` pour cmd.exe, `\` pour
+/// les shells Unix.
+pub const CONTINUATION: char = if cfg!(windows) { '^' } else { '\\' };
+
 impl Command<'_> {
-    /// Une option par ligne, avec les continuations `^` de cmd.exe : la
-    /// commande est directement collable dans un terminal.
+    /// Une option par ligne, avec la continuation du terminal du système
+    /// (`CONTINUATION`) : la commande est directement collable dans un terminal.
     pub fn multiline(&self, masked: bool) -> String {
-        self.parts(masked).join(" ^\n  ")
+        self.parts(masked).join(&format!(" {CONTINUATION}\n  "))
     }
 
     /// La même commande sur une seule ligne.
@@ -822,10 +826,10 @@ mod tests {
         assert_eq!(lines.len(), 5);
         // Toutes les lignes sauf la dernière doivent porter la continuation.
         for line in &lines[..lines.len() - 1] {
-            assert!(line.ends_with('^'), "ligne sans continuation : {line}");
+            assert!(line.ends_with(CONTINUATION), "ligne sans continuation : {line}");
         }
         assert!(lines.last().unwrap().ends_with("-ngl 999"));
-        assert_eq!(lines[1].trim(), "--host 127.0.0.1 ^");
+        assert_eq!(lines[1].trim(), format!("--host 127.0.0.1 {CONTINUATION}"));
     }
 
     #[test]

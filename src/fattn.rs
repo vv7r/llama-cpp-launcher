@@ -79,7 +79,8 @@ impl FaSupport {
 /// si la version ne l'indique pas. Lit la DLL entière (≈ 35 Mo) : en tâche
 /// de fond seulement.
 pub fn read(dir: &Path) -> Option<FaSupport> {
-    let bytes = std::fs::read(dir.join("ggml-cuda.dll")).ok()?;
+    let lib = if cfg!(windows) { "ggml-cuda.dll" } else { "libggml-cuda.so" };
+    let bytes = std::fs::read(dir.join(lib)).ok()?;
     find_in(&bytes)
 }
 

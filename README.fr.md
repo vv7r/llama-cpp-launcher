@@ -2,31 +2,46 @@
 
 *[English version](README.md)*
 
-Lanceur graphique pour `llama-server` et `llama-bench` — réécriture en **Rust**
-du projet [llamapilot](https://github.com/Hamrounmh/llamapilot) (WPF / .NET 8).
+Lanceur graphique pour `llama-server` et `llama-bench`, pour **Windows et
+Linux** — réécriture en **Rust** du projet
+[llamapilot](https://github.com/Hamrounmh/llamapilot) (WPF / .NET 8).
 
 Deux différences assumées avec l'original :
 
 1. **Aucune saisie libre pour les paramètres.** Chaque option est choisie dans
    une liste préenregistrée ; « désactivé » retire simplement l'option de la
    ligne de commande. Plus de faute de frappe qui fait échouer le démarrage.
-2. **Un seul `.exe`, sans runtime.** Pas de .NET, pas de WebView2, pas de
-   redistribuable Visual C++ : la CRT est liée statiquement.
+2. **Un seul exécutable, sans runtime.** Sous Windows, un `.exe` sans .NET,
+   WebView2 ni redistribuable Visual C++ (la CRT est liée statiquement) ; sous
+   Linux, un binaire qui n'a besoin que de la bibliothèque C.
 
 ![sans dépendance](https://img.shields.io/badge/runtime-aucun-2EA043)
 
 ## Installation
 
-Téléchargez `llama-cpp-launcher.exe` depuis la page
+**Windows** — téléchargez `llama-cpp-launcher.exe` depuis la page
 [Releases](https://github.com/vv7r/llama-cpp-launcher/releases/latest), placez-le
 dans un dossier à lui (il y écrit ses réglages) et lancez-le. L'exécutable
 n'est pas signé : au premier lancement, Windows SmartScreen peut demander
 *Informations complémentaires* → *Exécuter quand même*.
 
+**Linux** (x86_64, bureau X11 ou Wayland, glibc 2.35 ou plus récente : Ubuntu
+22.04, Debian 12, Fedora 36 et suivantes ; fonctionne aussi dans WSL2 sous
+Windows 11) — téléchargez `llama-cpp-launcher-linux-x86_64.tar.gz` et
+décompressez-le dans un dossier à lui :
+
+```bash
+mkdir -p ~/llama/launcher && tar -xzf llama-cpp-launcher-linux-x86_64.tar.gz -C ~/llama/launcher
+~/llama/launcher/llama-cpp-launcher
+```
+
+Le choix d'un dossier passe par la boîte de dialogue du bureau (portail XDG),
+ou par `zenity` s'il n'y a pas de portail.
+
 Au premier démarrage, indiquez :
 
 - le **répertoire llama.cpp** — celui qui contient vos versions (chaque
-  sous-dossier doit contenir `llama-server.exe`) ;
+  sous-dossier doit contenir l'exécutable `llama-server`) ;
 - le **répertoire des modèles** — scanné récursivement pour les `.gguf`.
 
 Les fichiers `config.json`, `profiles/` et `benchmark.md` sont écrits à côté de
@@ -70,8 +85,9 @@ infobulle expliquant son rôle ; un bouton désactivé explique au survol
 
 ### Commande générée
 Le panneau du bas montre la commande exacte qui sera exécutée, **une option
-par ligne** avec les continuations `^` de cmd.exe — elle est donc collable
-telle quelle dans un terminal. Le panneau se redimensionne par son bord
+par ligne** avec les continuations de ligne du terminal (`^` pour cmd.exe
+sous Windows, `\` sous Linux) — elle est donc collable telle quelle dans un
+terminal. Le panneau se redimensionne par son bord
 supérieur, le texte est sélectionnable, et deux boutons copient la version
 multi-lignes ou la version sur une seule ligne.
 
@@ -117,16 +133,18 @@ Sans llama.cpp installé, l'application s'ouvre sur **Installer llama.cpp** :
 - choix du dossier d'installation (les sources y sont clonées, les releases
   publiées à côté ; environ 2 Go avec CUDA) ;
 - vérification des prérequis — Git, CMake, compilateur C++ (Visual Studio
-  Build Tools), et selon le backend CUDA Toolkit ou Vulkan SDK. Pour chaque
-  outil manquant, la commande `winget` qui l'installe est prête à copier ;
+  Build Tools sous Windows, `build-essential` sous Linux), et selon le backend
+  CUDA Toolkit ou Vulkan SDK. Pour chaque outil manquant, la commande qui
+  l'installe est prête à copier (`winget` sous Windows, `apt` sous Linux) ;
   **Revérifier** suffit ensuite, sans relancer l'application ;
 - choix du backend (CUDA, Vulkan ou CPU), le plus adapté à la machine étant
   proposé ;
 - **Télécharger et compiler** : clone de llama.cpp depuis GitHub, compilation,
   première release créée et sélectionnée.
 
-Préférez un dossier au chemin court (par exemple `C:\llama`) : Windows limite
-un chemin à 260 caractères et la compilation crée des fichiers très profonds.
+Sous Windows, préférez un dossier au chemin court (par exemple `C:\llama`) :
+Windows limite un chemin à 260 caractères et la compilation crée des fichiers
+très profonds.
 Un clone existant peut aussi être choisi directement.
 
 ### Mise à jour de llama.cpp
@@ -256,10 +274,10 @@ le téléchargement recommence de zéro. La console détaille chaque reprise.
   `nvidia-smi`), alignés sur les boutons Démarrer / Arrêter / Redémarrer.
 - Six thèmes : Sombre, Clair, Nord, Dracula, Gruvbox et Solarized clair. En
   thème clair, les boutons d'action sont teintés plutôt que pleins.
-- Interface bilingue FR/EN ; au premier lancement, la langue suit celle de
-  Windows (français si Windows est en français, anglais sinon).
-- Icône de l'application dessinée par le code, identique pour la fenêtre et
-  l'exécutable.
+- Interface bilingue FR/EN ; au premier lancement, la langue suit celle du
+  système (français si le système est en français, anglais sinon).
+- Icône de l'application dessinée par le code, identique pour la fenêtre et,
+  sous Windows, l'exécutable.
 - Sections de la colonne de gauche repliables, sauvegarde automatique de la
   configuration toutes les deux secondes.
 
@@ -268,12 +286,15 @@ le téléchargement recommence de zéro. La console détaille chaque reprise.
 ```bash
 cargo test
 cargo build --release
-# -> target/release/uillamacpp.exe
+# -> target/release/uillamacpp(.exe)
 ```
 
-`.cargo/config.toml` active `+crt-static` sur la cible MSVC. Le workflow
-[`release.yml`](.github/workflows/release.yml) produit l'exécutable sur chaque
-tag `v*`.
+Les exécutables publiés se construisent avec `scripts/build-release.ps1`
+(Windows) et `scripts/build-release.sh` (Linux), qui retirent les chemins
+locaux du binaire. `.cargo/config.toml` active `+crt-static` sur la cible
+MSVC. Le workflow [`release.yml`](.github/workflows/release.yml) produit les
+deux exécutables sur chaque tag `v*` ; celui de Linux est compilé sur Ubuntu
+22.04 pour tourner aussi sur les distributions plus anciennes.
 
 Après une mise à jour de llama.cpp, vérifiez que le catalogue correspond
 toujours à ce qu'accepte `llama-server` (noms, alias, valeurs proposées) :
