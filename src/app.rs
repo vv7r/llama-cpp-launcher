@@ -3894,7 +3894,11 @@ impl App {
                              was reset), server stopped included.",
                         ),
                         self.power.session_wh,
-                        String::new(),
+                        format!(
+                            "{} {}",
+                            tr(fr, "en", "over"),
+                            power::duration(self.power.session_duration())
+                        ),
                     ),
                     (
                         tr(fr, "Total cumulé", "Running total"),
@@ -3977,42 +3981,71 @@ impl App {
         ui.label(RichText::new(tr(fr, "Puissance (W)", "Power (W)")).strong().size(12.0).color(color))
             .on_hover_text(tr(
                 fr,
-                "Relevé toutes les deux secondes, 24 h au plus. Molette + Ctrl pour zoomer, \
-                 double clic pour revenir.",
-                "Read every two seconds, 24 h at most. Ctrl + wheel to zoom, double click to \
-                 reset.",
+                "Relevé toutes les deux secondes, 24 h au plus. Ctrl + molette pour zoomer, \
+                 glissez pour vous déplacer dans le temps, double clic pour tout revoir.",
+                "Read every two seconds, 24 h at most. Ctrl + wheel to zoom, drag to move \
+                 through time, double click to see everything again.",
             ));
-        let mut plot = egui_plot::Plot::new("power_plot")
+        // Axe vertical fixe, de 0 au plus haut de la limite de la carte et des
+        // relevés : seul le temps se parcourt.
+        let peak = points.iter().map(|p| p[1]).fold(0.0, f64::max);
+        let y_max = (limit.max(peak) * 1.08).max(10.0);
+        let (x_first, x_last) = match (points.first(), points.last()) {
+            (Some(a), Some(b)) => (a[0], b[0]),
+            _ => (0.0, 0.0),
+        };
+        let plot = egui_plot::Plot::new("power_plot")
             .height(ui.available_height().clamp(140.0, 400.0) - 10.0)
-            .include_y(0.0)
+            .allow_drag([true, false])
+            .allow_zoom([true, false])
+            .allow_boxed_zoom(false)
             .allow_scroll(false)
+            // Sans marge horizontale, « tout voir » couvre exactement les
+            // relevés : une vue au moins aussi large y revient (plus bas).
+            .set_margin_fraction(egui::vec2(0.0, 0.05))
             .y_axis_min_width(44.0)
             .y_grid_spacer(egui_plot::uniform_grid_spacer(|input| {
                 let step = nice_step((input.bounds.1 - input.bounds.0) / 4.0);
                 [step / 5.0, step, step * 5.0]
             }))
-            // Graduations en minutes rondes : les puissances de 10 d'egui_plot
-            // donneraient des pas de 10 ou 100 s, affichés « 14:05 » en double.
+            // Graduations en durées rondes (les puissances de 10 d'egui_plot
+            // donneraient des pas de 10 ou 100 s) ; les secondes s'affichent
+            // sous la minute, sinon « 14:05 » apparaîtrait en double.
             .x_grid_spacer(egui_plot::uniform_grid_spacer(|input| {
                 let span = input.bounds.1 - input.bounds.0;
-                let step = [60.0, 120.0, 300.0, 600.0, 900.0, 1800.0, 3600.0, 7200.0, 14400.0]
-                    .into_iter()
-                    .find(|s| span / s <= 8.0)
-                    .unwrap_or(21600.0);
+                let step = [
+                    10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0, 1800.0, 3600.0, 7200.0, 14400.0,
+                ]
+                .into_iter()
+                .find(|s| span / s <= 8.0)
+                .unwrap_or(21600.0);
                 [step / 2.0, step, step * 4.0]
             }))
-            .x_axis_formatter(move |mark, _| power::clock(origin, mark.value))
+            .x_axis_formatter(move |mark, _| power::clock(origin, mark.value, mark.step_size < 60.0))
             .label_formatter(move |pos| {
                 let p = match pos {
                     egui_plot::HoverPosition::NearDataPoint { position, .. } => position,
                     egui_plot::HoverPosition::Elsewhere { position } => position,
                 };
-                Some(format!("{} · {:.0} W", power::clock(origin, p.x), p.y))
+                Some(format!("{} · {:.0} W", power::clock(origin, p.x, true), p.y))
             });
-        if limit > 0.0 {
-            plot = plot.include_y(limit);
-        }
         plot.show(ui, |plot| {
+            plot.set_plot_bounds_y(0.0..=y_max);
+            // Horizontalement, la vue reste dans la plage des relevés : pas de
+            // vide avant le premier ni après le dernier. Plus large que les
+            // relevés, elle revient à « tout voir ».
+            if !plot.auto_bounds().x {
+                let b = plot.plot_bounds();
+                let (lo, hi) = (b.min()[0], b.max()[0]);
+                let width = hi - lo;
+                if width >= x_last - x_first {
+                    plot.set_auto_bounds([true, false]);
+                } else if lo < x_first {
+                    plot.set_plot_bounds_x(x_first..=x_first + width);
+                } else if hi > x_last {
+                    plot.set_plot_bounds_x(x_last - width..=x_last);
+                }
+            }
             if limit > 0.0 {
                 plot.hline(
                     egui_plot::HLine::new(tr(fr, "limite", "limit"), limit)

@@ -93,9 +93,11 @@ downloads, live statistics and GPU power tracking.
   logs: min, **token-weighted average**, median, max, last, draft acceptance
   rate, and charts of speed versus context size (hover a point for the prompt
   size).
-- **GPU power** (NVIDIA): live wattage curve, energy used since the server
-  started (with Wh per 1000 generated tokens), since the app opened and in a
-  running total — and its cost at your electricity price.
+- **GPU power** (NVIDIA): live wattage curve (Ctrl + wheel zooms in on a
+  time window, dragging moves through time), energy used since the server
+  started (with Wh per 1000 generated tokens), since the app opened (with the
+  elapsed time) and in a running total — and its cost at your electricity
+  price.
 
 **Benchmark**
 - Runs `llama-bench` on the models and versions you tick, with editable

@@ -2,8 +2,8 @@
 //! `gpu.rs` (toutes les deux secondes) et énergie consommée, intégrée au fil
 //! des relevés.
 
-use chrono::{DateTime, Local};
-use std::time::Instant;
+use chrono::{DateTime, Local, Timelike};
+use std::time::{Duration, Instant};
 
 /// Relevés gardés : 24 h à un relevé toutes les deux secondes.
 const KEPT: usize = 43_200;
@@ -12,8 +12,15 @@ const MAX_GAP_SECS: f64 = 10.0;
 
 pub struct PowerLog {
     origin: Instant,
+    /// Début de la minute de l'ouverture : les abscisses comptent depuis une
+    /// minute ronde, pour que les graduations tombent sur `14:05`, `14:05:30`.
     origin_wall: DateTime<Local>,
+    /// Secondes écoulées dans cette minute à l'instant `origin`.
+    origin_offset: f64,
     last: Option<Instant>,
+    /// Début du compteur de session : ouverture de l'application, ou dernière
+    /// réinitialisation de la courbe.
+    session_start: Instant,
     /// (secondes depuis l'origine, watts).
     pub samples: Vec<[f64; 2]>,
     /// Énergie depuis l'ouverture de l'application (ou la réinitialisation
@@ -25,10 +32,14 @@ pub struct PowerLog {
 
 impl PowerLog {
     pub fn new() -> Self {
+        let wall = Local::now();
+        let origin_offset = f64::from(wall.second()) + f64::from(wall.nanosecond() % 1_000_000_000) / 1e9;
         Self {
             origin: Instant::now(),
-            origin_wall: Local::now(),
+            origin_wall: wall.with_second(0).and_then(|w| w.with_nanosecond(0)).unwrap_or(wall),
+            origin_offset,
             last: None,
+            session_start: Instant::now(),
             samples: Vec::new(),
             session_wh: 0.0,
             server_wh: 0.0,
@@ -50,7 +61,7 @@ impl PowerLog {
         if server_running {
             self.server_wh += wh;
         }
-        let secs = now.saturating_duration_since(self.origin).as_secs_f64();
+        let secs = now.saturating_duration_since(self.origin).as_secs_f64() + self.origin_offset;
         self.samples.push([secs, watts]);
         if self.samples.len() > KEPT {
             self.samples.remove(0);
@@ -62,6 +73,12 @@ impl PowerLog {
     pub fn reset(&mut self) {
         self.samples.clear();
         self.session_wh = 0.0;
+        self.session_start = Instant::now();
+    }
+
+    /// Temps écoulé depuis le début du compteur de session.
+    pub fn session_duration(&self) -> Duration {
+        self.session_start.elapsed()
     }
 
     pub fn reset_server(&mut self) {
@@ -108,11 +125,22 @@ impl PowerLog {
     }
 }
 
-/// Heure murale d'un point de la courbe (`14:05`).
-pub fn clock(origin: DateTime<Local>, secs: f64) -> String {
+/// Heure murale d'un point de la courbe : `14:05`, ou `14:05:30` avec les
+/// secondes.
+pub fn clock(origin: DateTime<Local>, secs: f64, seconds: bool) -> String {
     (origin + chrono::Duration::milliseconds((secs * 1000.0) as i64))
-        .format("%H:%M")
+        .format(if seconds { "%H:%M:%S" } else { "%H:%M" })
         .to_string()
+}
+
+/// Durée lisible : `45 s`, `12 min`, `2 h 05 min`.
+pub fn duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    match secs {
+        s if s < 60 => format!("{s} s"),
+        s if s < 3600 => format!("{} min", s / 60),
+        s => format!("{} h {:02} min", s / 3600, s / 60 % 60),
+    }
 }
 
 /// `12.3 Wh`, ou `1.234 kWh` à partir de 1 000 Wh.
@@ -170,6 +198,14 @@ mod tests {
         assert!(d.len() <= 1000);
         assert!(d.iter().any(|p| p[1] == 400.0), "le pic reste visible");
         assert!(d.windows(2).all(|w| w[0][0] <= w[1][0]), "abscisses croissantes");
+    }
+
+    #[test]
+    fn formats_durations() {
+        assert_eq!(duration(Duration::from_secs(45)), "45 s");
+        assert_eq!(duration(Duration::from_secs(12 * 60 + 30)), "12 min");
+        assert_eq!(duration(Duration::from_secs(2 * 3600 + 5 * 60)), "2 h 05 min");
+        assert_eq!(duration(Duration::from_secs(26 * 3600)), "26 h 00 min");
     }
 
     #[test]

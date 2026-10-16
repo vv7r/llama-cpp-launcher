@@ -220,9 +220,11 @@ Les statistiques repartent de zéro à chaque démarrage du serveur, ou avec
 
 **Consommation GPU** — courbe de la puissance de la carte (NVIDIA), énergie
 consommée depuis le démarrage du serveur (avec les Wh pour 1000 tokens
-générés), depuis l'ouverture de l'application, et en cumul conservé d'une
-session à l'autre, en Wh ou kWh. Le coût se calcule avec le prix du kWh
-indiqué (€, $, £ ou CHF).
+générés), depuis l'ouverture de l'application (avec le temps écoulé), et en
+cumul conservé d'une session à l'autre, en Wh ou kWh. Le coût se calcule avec
+le prix du kWh indiqué (€, $, £ ou CHF). Dans la courbe, Ctrl + molette zoome
+sur une période et un glissé la fait défiler dans le temps ; l'axe des watts
+reste fixe, à partir de 0.
 
 ### Benchmark
 Les réglages de `llama-bench` (bouton **Défauts** à côté de leur titre) se
