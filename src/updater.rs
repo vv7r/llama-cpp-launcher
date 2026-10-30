@@ -13,6 +13,7 @@
 //! Sans installation existante, `install` clone d'abord le dépôt dans le
 //! dossier choisi puis enchaîne les mêmes étapes, avec le backend choisi.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -758,6 +759,22 @@ fn git(source: &Path, args: &[&str]) -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// `HEAD` courant ; `None` s'il n'y a pas encore de commit (clone en cours).
+fn head_commit(source: &Path) -> Option<String> {
+    git(source, &["rev-parse", "HEAD"]).ok().filter(|h| !h.is_empty())
+}
+
+/// Fichiers modifiés entre deux commits, qui existent encore.
+fn changed_files(source: &Path, before: &str, after: &str) -> Vec<PathBuf> {
+    let Ok(out) = git(source, &["diff", "--name-only", before, after]) else {
+        return Vec::new();
+    };
+    out.lines()
+        .map(|l| source.join(l.trim()))
+        .filter(|p| p.is_file())
+        .collect()
+}
+
 pub fn git_state(source: &Path) -> anyhow::Result<GitState> {
     Ok(GitState {
         branch: git(source, &["rev-parse", "--abbrev-ref", "HEAD"])?,
@@ -934,6 +951,40 @@ pub fn install(plan: Plan) -> Task {
 
 const STAGES: usize = 5;
 
+/// Commande de compilation incrémentale du dossier de build.
+fn build_command(build: &Path, jobs: usize) -> Command {
+    let mut cmake = tool(CMAKE);
+    cmake
+        .arg("--build")
+        .arg(build)
+        .args(["--config", "Release", "--parallel", &jobs.to_string()])
+        // Messages MSBuild en anglais : stables et sans problème d'encodage.
+        .env("VSLANG", "1033");
+    cmake
+}
+
+/// Compile une fois ; renvoie aussi vrai si l'édition de liens a échoué
+/// (`LNK2019`/`LNK1120`), cas où un objet obsolète est en cause.
+fn build_once(
+    cmd: Command,
+    ctx: &Ctx,
+    done: &mut usize,
+    total: usize,
+) -> (anyhow::Result<()>, bool) {
+    let mut link_failed = false;
+    let tx = ctx.tx.clone();
+    let result = run_streamed(cmd, ctx, |line| {
+        if line.contains("LNK2019") || line.contains("LNK1120") {
+            link_failed = true;
+        }
+        if let Some(fraction) = build_progress(line, done, total) {
+            let _ = tx.send(Event::Progress(fraction));
+        }
+        false
+    });
+    (result, link_failed)
+}
+
 fn stage(ctx: &Ctx, index: usize, label: &'static str) -> anyhow::Result<()> {
     anyhow::ensure!(!ctx.cancelled(), "annulé");
     let _ = ctx.tx.send(Event::Stage {
@@ -998,11 +1049,17 @@ fn run_update(plan: &Plan, ctx: &Ctx) -> anyhow::Result<Release> {
     } else {
         stage(ctx, 1, "Récupération des sources (git pull)")?;
         anyhow::ensure!(is_source(source), "{} n'est pas un dépôt llama.cpp", source.display());
+        let before = head_commit(source);
         let mut pull = tool(GIT);
         pull.args(["-c", "core.longpaths=true", "-C"])
             .arg(source)
             .args(["pull", "--ff-only"]);
         run_streamed(pull, ctx, |_| false)?;
+        if let (Some(before), Some(after)) = (before, head_commit(source)) {
+            if before != after {
+                forget_stale_objects(source, &before, &after, &build_dir, ctx);
+            }
+        }
     }
     anyhow::ensure!(is_source(source), "{} n'est pas un dépôt llama.cpp", source.display());
     let state = git_state(source)?;
@@ -1086,20 +1143,35 @@ fn run_update(plan: &Plan, ctx: &Ctx) -> anyhow::Result<Release> {
     let total = count_projects(&build_dir);
     let mut done = 0usize;
     let jobs = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let mut cmake = tool(CMAKE);
-    cmake
-        .arg("--build")
-        .arg(&build_dir)
-        .args(["--config", "Release", "--parallel", &jobs.to_string()])
-        // Messages MSBuild en anglais : stables et sans problème d'encodage.
-        .env("VSLANG", "1033");
-    let tx = ctx.tx.clone();
-    run_streamed(cmake, ctx, |line| {
-        if let Some(fraction) = build_progress(line, &mut done, total) {
-            let _ = tx.send(Event::Progress(fraction));
+    let (built_once, link_failed) =
+        build_once(build_command(&build_dir, jobs), ctx, &mut done, total);
+    let built_once = match built_once {
+        Err(e) if link_failed && !ctx.cancelled() => {
+            // Un objet compilé avant un changement d'en-tête peut survivre au
+            // suivi de dépendances (LNK2019 : symbole défini avec une autre
+            // signature). Une seule reprise, en repartant des objets.
+            let objects = object_files(&build_dir).into_iter().map(|(p, _)| p).collect();
+            let removed = delete_all(objects);
+            if removed == 0 {
+                // Rien à recompiler : la reprise échouerait de la même façon.
+                Err(e)
+            } else {
+                ctx.line(format!(
+                    "édition de liens en échec : {removed} objets supprimés, nouvelle tentative"
+                ));
+                done = 0;
+                match build_once(build_command(&build_dir, jobs), ctx, &mut done, total).0 {
+                    Ok(()) => Ok(()),
+                    // Annulation pendant la reprise : c'est la vraie raison.
+                    Err(retry) if ctx.cancelled() => Err(retry),
+                    // Sinon l'erreur d'origine est la plus utile.
+                    Err(_) => Err(e),
+                }
+            }
         }
-        false
-    })?;
+        other => other,
+    };
+    built_once?;
 
     // 4. Publication dans un nouveau dossier.
     stage(ctx, 4, "Copie de la release")?;
@@ -1290,6 +1362,124 @@ fn count_projects(build: &Path) -> usize {
     let mut n = 0;
     walk(build, 0, &mut n);
     n
+}
+
+/// Date de modification d'un fichier ; `None` s'il a disparu.
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// Objets compilés (`*.obj`, `*.o`) du dossier de build, avec leur date.
+fn object_files(build: &Path) -> Vec<(PathBuf, std::time::SystemTime)> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<(PathBuf, std::time::SystemTime)>) {
+        if depth > 8 {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, depth + 1, out);
+            } else if matches!(path.extension().and_then(|e| e.to_str()), Some("obj" | "o")) {
+                if let Some(time) = modified(&path) {
+                    out.push((path, time));
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(build, 0, &mut out);
+    out
+}
+
+/// Objets antérieurs à la date de référence : ils ont été compilés avant les
+/// sources qu'ils prétendent refléter.
+fn stale_objects(
+    objects: &[(PathBuf, std::time::SystemTime)],
+    reference: std::time::SystemTime,
+) -> Vec<PathBuf> {
+    objects
+        .iter()
+        .filter(|(_, t)| *t < reference)
+        .map(|(p, _)| p.clone())
+        .collect()
+}
+
+/// Supprime les fichiers indiqués ; renvoie le nombre effectivement supprimés.
+fn delete_all(paths: Vec<PathBuf>) -> usize {
+    paths.iter().filter(|p| std::fs::remove_file(p).is_ok()).count()
+}
+
+/// Extensions dont la modification peut rendre un objet obsolète. La
+/// documentation et les fichiers CMake, eux, ne produisent pas d'objet.
+const SOURCE_EXTENSIONS: [&str; 10] = ["c", "cc", "cpp", "cu", "cuh", "h", "hpp", "hip", "m", "mm"];
+
+/// Dossier du build qui reflète le dossier d'un fichier source modifié
+/// (`ggml/src/ggml-cuda/common.cuh` → `build/ggml/src/ggml-cuda`).
+///
+/// `None` pour un fichier qui ne produit pas d'objet (documentation, CMake)
+/// ou à la racine du dépôt : son dossier de build serait le build entier, et
+/// tout objet plus ancien que lui serait supprimé — une recompilation complète
+/// pour un `README.md`.
+fn mirror_dir(source: &Path, build: &Path, file: &Path) -> Option<PathBuf> {
+    let ext = file.extension().and_then(|e| e.to_str())?;
+    if !SOURCE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()) {
+        return None;
+    }
+    let rel = file.strip_prefix(source).ok()?;
+    let dir = rel.parent()?;
+    if dir.as_os_str().is_empty() {
+        return None;
+    }
+    Some(build.join(dir))
+}
+
+/// Objets à supprimer après un pull : ceux des dossiers de build qui
+/// reflètent les dossiers des fichiers modifiés, s'ils sont antérieurs au
+/// fichier le plus récent de leur dossier.
+///
+/// Se limiter au dossier voisin évite de recompiler tout le projet pour un
+/// seul en-tête, tout en couvrant le cas qui échoue : le suivi de dépendances
+/// de nvcc sous MSBuild oublie les en-têtes inclus indirectement
+/// (`ssm-scan.cu` → `ssm-scan.cuh` → `common.cuh`), l'objet survit au
+/// changement de signature et l'édition de liens échoue (`LNK2019`,
+/// `LNK1120`).
+fn stale_after_pull(source: &Path, build: &Path, changed: &[PathBuf]) -> Vec<PathBuf> {
+    // Un dossier touché plusieurs fois n'est parcouru qu'une fois, avec la
+    // date de son fichier modifié le plus récent.
+    let mut references: HashMap<PathBuf, std::time::SystemTime> = HashMap::new();
+    for file in changed {
+        let Some(dir) = mirror_dir(source, build, file) else {
+            continue;
+        };
+        let Some(time) = modified(file) else {
+            continue;
+        };
+        let newest = references.entry(dir).or_insert(time);
+        if time > *newest {
+            *newest = time;
+        }
+    }
+    let mut stale: HashSet<PathBuf> = HashSet::new();
+    for (dir, reference) in references {
+        stale.extend(stale_objects(&object_files(&dir), reference));
+    }
+    let mut stale: Vec<PathBuf> = stale.into_iter().collect();
+    stale.sort();
+    stale
+}
+
+/// Supprime les objets devenus obsolètes par un pull.
+fn forget_stale_objects(source: &Path, before: &str, after: &str, build: &Path, ctx: &Ctx) {
+    let changed = changed_files(source, before, after);
+    let removed = delete_all(stale_after_pull(source, build, &changed));
+    if removed > 0 {
+        ctx.line(format!(
+            "{removed} objets obsolètes supprimés (fichiers modifiés)"
+        ));
+    }
 }
 
 /// Avancement lu dans une ligne de sortie : `[12/345]` (Ninja, Makefiles) ou
@@ -1617,6 +1807,154 @@ CMAKE_GENERATOR_PLATFORM:INTERNAL=
         );
         assert_eq!(build_progress("  llama.vcxproj -> C:\\b\\llama.dll", &mut done, 4), Some(0.5));
         assert_eq!(build_progress("warning C4244: conversion", &mut done, 4), None);
+    }
+
+    fn stamp(secs: u64) -> std::time::SystemTime {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn stale_objects_are_the_ones_older_than_the_reference() {
+        let objects = vec![
+            (PathBuf::from("vieux.obj"), stamp(100)),
+            (PathBuf::from("recent.obj"), stamp(300)),
+            (PathBuf::from("egal.obj"), stamp(200)),
+        ];
+        assert_eq!(
+            stale_objects(&objects, stamp(200)),
+            vec![PathBuf::from("vieux.obj")]
+        );
+        assert!(stale_objects(&[], stamp(200)).is_empty());
+    }
+
+    #[test]
+    fn object_files_lists_the_compiled_objects_of_a_build() {
+        let root = scratch("objects");
+        std::fs::create_dir_all(root.join("ggml/src/Release")).unwrap();
+        std::fs::write(root.join("ggml/src/Release/ssm-scan.obj"), b"x").unwrap();
+        std::fs::write(root.join("ggml/src/Release/notes.txt"), b"x").unwrap();
+        let found: Vec<String> = object_files(&root)
+            .into_iter()
+            .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(found, vec!["ssm-scan.obj".to_string()]);
+        // Dossier absent : rien à supprimer, pas d'erreur.
+        assert!(object_files(&root.join("absent")).is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    fn quiet_ctx() -> Ctx {
+        let (tx, _rx) = channel();
+        Ctx {
+            tx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            pid: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Un échec de compilation n'est une erreur d'édition de liens que si le
+    /// linker s'est plaint d'un symbole non résolu.
+    #[test]
+    fn a_link_failure_is_recognised() {
+        let ctx = quiet_ctx();
+        let mut done = 0;
+        let mut cmd = Command::new(if cfg!(windows) { "cmd.exe" } else { "sh" });
+        #[cfg(windows)]
+        cmd.args(["/C", "echo   ggml-cuda.dll : error LNK2019: symbole non resolu & exit 1"]);
+        #[cfg(not(windows))]
+        cmd.args(["-c", "echo 'ggml-cuda.dll : error LNK2019: symbole non resolu'; exit 1"]);
+        let (result, link_failed) = build_once(cmd, &ctx, &mut done, 0);
+        assert!(result.is_err());
+        assert!(link_failed, "LNK2019 doit être reconnu");
+
+        // Une erreur de compilation ordinaire n'en est pas une.
+        let mut cmd = Command::new(if cfg!(windows) { "cmd.exe" } else { "sh" });
+        #[cfg(windows)]
+        cmd.args(["/C", "echo error C2065: identificateur non declare & exit 1"]);
+        #[cfg(not(windows))]
+        cmd.args(["-c", "echo 'error C2065: identificateur non declare'; exit 1"]);
+        let (result, link_failed) = build_once(cmd, &ctx, &mut done, 0);
+        assert!(result.is_err());
+        assert!(!link_failed);
+
+        // Une compilation réussie non plus.
+        let mut cmd = Command::new(if cfg!(windows) { "cmd.exe" } else { "sh" });
+        #[cfg(windows)]
+        cmd.args(["/C", "echo tout va bien"]);
+        #[cfg(not(windows))]
+        cmd.args(["-c", "echo 'tout va bien'"]);
+        let (result, link_failed) = build_once(cmd, &ctx, &mut done, 0);
+        assert!(result.is_ok());
+        assert!(!link_failed);
+    }
+
+    #[test]
+    fn mirror_dir_follows_the_source_tree() {
+        let source = Path::new("C:/src/llama.cpp");
+        let build = Path::new("C:/src/llama.cpp/build-uillamacpp");
+        let file = source.join("ggml/src/ggml-cuda/common.cuh");
+        assert_eq!(
+            mirror_dir(source, build, &file),
+            Some(build.join("ggml/src/ggml-cuda"))
+        );
+        // Hors du dépôt : rien à faire.
+        assert!(mirror_dir(source, build, Path::new("C:/ailleurs/x.cuh")).is_none());
+    }
+
+    /// Un fichier qui ne produit pas d'objet, ou à la racine du dépôt, ne doit
+    /// pas faire supprimer le build entier.
+    #[test]
+    fn a_document_change_deletes_nothing() {
+        let source = Path::new("C:/src/llama.cpp");
+        let build = Path::new("C:/src/llama.cpp/build-uillamacpp");
+        for name in ["README.md", "CMakeLists.txt", "LICENSE"] {
+            assert_eq!(mirror_dir(source, build, &source.join(name)), None, "{name}");
+        }
+        // Documentation dans un dossier de sources.
+        let doc = source.join("ggml/src/ggml-cuda/README.md");
+        assert_eq!(mirror_dir(source, build, &doc), None);
+
+        // Et concrètement : les objets du build restent en place.
+        let root = scratch("docs");
+        let source = root.join("llama.cpp");
+        let build = source.join(BUILD_DIR_NAME);
+        let release = build.join("ggml/src/ggml-cuda/ggml-cuda.dir/Release");
+        std::fs::create_dir_all(&release).unwrap();
+        let object = release.join("ssm-scan.obj");
+        std::fs::write(&object, b"x").unwrap();
+        let readme = source.join("README.md");
+        std::fs::write(&readme, b"x").unwrap();
+        assert!(stale_after_pull(&source, &build, &[readme]).is_empty());
+        assert!(object.is_file());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Sur un vrai dépôt : les objets du dossier voisin d'un en-tête modifié
+    /// sont bien détectés, puis supprimés — et ceux du reste du projet
+    /// restent intacts.
+    /// `LLAMA_SOURCE=<dépôt> cargo test drops_the_stale_cuda_object -- --ignored --nocapture`
+    #[test]
+    #[ignore = "nécessite un dépôt llama.cpp compilé par l'app (LLAMA_SOURCE)"]
+    fn drops_the_stale_cuda_object() {
+        let source = PathBuf::from(std::env::var("LLAMA_SOURCE").expect("LLAMA_SOURCE"));
+        let build = source.join(BUILD_DIR_NAME);
+        let header = source.join("ggml/src/ggml-cuda/common.cuh");
+        let elsewhere = source.join("src/llama.cpp");
+        let stale = stale_after_pull(&source, &build, &[header.clone(), elsewhere.clone()]);
+        println!("objets antérieurs à {} : {}", header.display(), stale.len());
+        for p in &stale {
+            println!("  {}", p.display());
+        }
+        // Le reste du projet n'est pas touché.
+        assert!(stale
+            .iter()
+            .all(|p| !p.starts_with(build.join("src")) && !p.starts_with(build.join("common"))));
+        let removed = delete_all(stale.clone());
+        println!("{removed} objets supprimés");
+        assert_eq!(removed, stale.len());
+        assert!(stale.iter().all(|p| !p.exists()));
+        // Une fois nettoyé, plus rien n'est périmé.
+        assert!(stale_after_pull(&source, &build, &[header]).is_empty());
     }
 
     #[test]

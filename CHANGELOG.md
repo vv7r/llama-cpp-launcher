@@ -4,6 +4,24 @@ All notable changes to llama.cpp launcher. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/).
 
+## [1.1.1] - 2026-10-30
+
+### Added
+
+- **Version in the window title** (`llama.cpp launcher 1.1.1`), so the running
+  build is visible at a glance. The window identity (`app_id`, taskbar group,
+  Linux `.desktop` entry) is unchanged.
+
+### Fixed
+
+- **Build failing with `LNK2019` / `LNK1120` after a llama.cpp update**
+  ("symbole externe non résolu", `new_pool_for_device`): the dependency
+  tracking of nvcc under MSBuild misses headers included indirectly, so a
+  `.cu` object survived a header change and the link failed. After a `git
+  pull` that changed files, the objects of the build directories mirroring
+  the changed source directories are now deleted, so they are recompiled; if
+  the link fails anyway, the objects are cleaned once and the build retried.
+
 ## [1.1.0] - 2026-10-16
 
 ### Added
@@ -63,6 +81,7 @@ First release: a single Windows executable to run `llama-server` and
 import, live token statistics and GPU power, benchmarks, Hugging Face
 downloads with resume, and llama.cpp installation and updates from source.
 
+[1.1.1]: https://github.com/vv7r/llama-cpp-launcher/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/vv7r/llama-cpp-launcher/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/vv7r/llama-cpp-launcher/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/vv7r/llama-cpp-launcher/releases/tag/v1.0.0

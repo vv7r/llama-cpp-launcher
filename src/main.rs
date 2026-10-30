@@ -24,9 +24,19 @@ mod sysmon;
 mod theme;
 mod updater;
 
+/// Nom de l'application : identité de la fenêtre (`app_id`, groupe de la
+/// barre des tâches), sans le numéro de version.
+const APP_NAME: &str = "llama.cpp launcher";
+
+/// Titre de la fenêtre : le nom suivi de la version du binaire, pour voir
+/// d'un coup d'œil quelle version tourne.
+fn title() -> String {
+    format!("{APP_NAME} {}", env!("CARGO_PKG_VERSION"))
+}
+
 fn main() -> eframe::Result<()> {
     let viewport = egui::ViewportBuilder::default()
-        .with_title("llama.cpp launcher")
+        .with_title(title())
         .with_inner_size([1440.0, 880.0])
         .with_min_inner_size([1020.0, 620.0])
         .with_icon(theme::icon());
@@ -47,7 +57,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "llama.cpp launcher",
+        APP_NAME,
         options,
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
     )
@@ -71,4 +81,25 @@ fn render_setup() -> eframe::egui_wgpu::WgpuSetupCreateNew {
         setup.power_preference = PowerPreference::LowPower;
     }
     setup
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Le titre affiché porte la version du binaire, pour savoir d'un coup
+    /// d'œil quelle version tourne.
+    #[test]
+    fn the_title_carries_the_version() {
+        let title = title();
+        assert!(
+            title.ends_with(env!("CARGO_PKG_VERSION")),
+            "titre sans version : {title}"
+        );
+        assert!(title.starts_with(APP_NAME), "titre sans nom : {title}");
+        // L'identité de la fenêtre, elle, ne bouge pas avec la version :
+        // l'entrée `.desktop` de Linux et le groupe de la barre des tâches
+        // s'appuient dessus.
+        assert_eq!(APP_NAME, "llama.cpp launcher");
+    }
 }
